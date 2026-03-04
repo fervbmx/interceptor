@@ -1,0 +1,10 @@
+# Binaries for programs and plugins
+*.exe
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Editor/IDE
+.idea/
+.vscode/
