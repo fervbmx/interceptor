@@ -60,9 +60,7 @@ client = &http.Client{
         nil,
         interceptors.LoggingInterceptor(&interceptors.LoggingOptions{
             Format:       interceptors.LogFormatLogfmt,
-            HeadersToLog: []string{"X-Request-ID"},
-            LogBody:      true,
-            MaxBodyLogSize: 2048,
+            HeadersToLog: []string{"X-Request-ID"}
         }),
     ),
 }
