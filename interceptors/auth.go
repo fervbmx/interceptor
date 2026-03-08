@@ -14,8 +14,8 @@ import (
 //	)
 func BasicAuthInterceptor(username, password string) interceptor.InterceptorFunc {
 	return func(req *http.Request, next interceptor.HandlerFunc) (*http.Response, error) {
-		req = req.Clone(req.Context())
-		req.SetBasicAuth(username, password)
-		return next(req)
+		clonedReq := req.Clone(req.Context())
+		clonedReq.SetBasicAuth(username, password)
+		return next(clonedReq)
 	}
 }

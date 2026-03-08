@@ -14,8 +14,8 @@ import (
 //	)
 func HeaderInterceptor(key, value string) interceptor.InterceptorFunc {
 	return func(req *http.Request, next interceptor.HandlerFunc) (*http.Response, error) {
-		req = req.Clone(req.Context())
-		req.Header.Set(key, value)
-		return next(req)
+		clonedReq := req.Clone(req.Context())
+		clonedReq.Header.Set(key, value)
+		return next(clonedReq)
 	}
 }

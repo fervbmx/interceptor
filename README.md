@@ -11,10 +11,11 @@ go get github.com/fervbmx/interceptor
 ## Usage
 
 ```go
-// Flow: HeaderInterceptor → BasicAuthInterceptor → http.DefaultTransport
+// Flow: LoggingInterceptor → HeaderInterceptor → BasicAuthInterceptor → http.DefaultTransport
 client := &http.Client{
     Transport: interceptor.NewTransportInterceptor(
         nil,
+        interceptors.LoggingInterceptor(nil),
         interceptors.HeaderInterceptor("X-API-KEY", "secret"),
         interceptors.BasicAuthInterceptor("user", "pass"),
     ),
@@ -29,6 +30,43 @@ Pass `nil` as the first argument to use `http.DefaultTransport`, or provide your
 |---|---|
 | `HeaderInterceptor(key, value)` | Sets a header on every request |
 | `BasicAuthInterceptor(user, password)` | Sets Basic authentication |
+| `LoggingInterceptor(opts)` | Logs request start/completion in JSON (default), logfmt, or text |
+
+### LoggingInterceptor examples
+
+```go
+// Default JSON + flat keys + slog.Default().
+client := &http.Client{
+    Transport: interceptor.NewTransportInterceptor(
+        nil,
+        interceptors.LoggingInterceptor(nil),
+    ),
+}
+
+// Nested JSON keys for ECS-style pipelines.
+client = &http.Client{
+    Transport: interceptor.NewTransportInterceptor(
+        nil,
+        interceptors.LoggingInterceptor(&interceptors.LoggingOptions{
+            Format:   interceptors.LogFormatJSON,
+            KeyStyle: interceptors.KeyStyleNested,
+        }),
+    ),
+}
+
+// logfmt format with explicit header allowlist and optional body logging.
+client = &http.Client{
+    Transport: interceptor.NewTransportInterceptor(
+        nil,
+        interceptors.LoggingInterceptor(&interceptors.LoggingOptions{
+            Format:       interceptors.LogFormatLogfmt,
+            HeadersToLog: []string{"X-Request-ID"},
+            LogBody:      true,
+            MaxBodyLogSize: 2048,
+        }),
+    ),
+}
+```
 
 ## Custom interceptors
 
