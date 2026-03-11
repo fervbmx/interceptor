@@ -1,7 +1,6 @@
 package interceptors
 
 import (
-	"errors"
 	"log/slog"
 	"net/http"
 	"net/textproto"
@@ -14,11 +13,12 @@ import (
 	"github.com/fervbmx/interceptor"
 )
 
-var defaultSensitiveHeaders = []string{
+const redacted = "REDACTED"
+var defaultSensitiveHeaders = newHeaderSet(
 	"Authorization",
 	"Cookie",
 	"Set-Cookie",
-}
+)
 
 type loggingConfig struct {
 	logger           *slog.Logger
@@ -50,20 +50,15 @@ type RequestLoggingOptions struct {
 	SensitiveHeaders []string
 }
 
-// ErrorTyper is implemented by errors that can expose a stable error type.
-type ErrorTyper interface {
-	ErrorType() string
-}
-
 // AddRequestLogging returns an interceptor that logs request lifecycle events
 // before and after the next handler runs. It emits a start event, then either a
 // completion event or a failure event. If opts is nil, default logging options
 // are used.
 //
 // interceptor.NewTransport(nil,
-// 		interceptors.AddRequestLogging(
-// 			Logging: logging
-// 		),
+//	interceptors.AddRequestLogging(
+//		Logging: logging
+//	),
 // )
 func AddRequestLogging(opts *RequestLoggingOptions) interceptor.Middleware {
 	cfg := buildLoggingConfig(opts)
@@ -90,7 +85,7 @@ func buildLoggingConfig(opts *RequestLoggingOptions) loggingConfig {
 	cfg := loggingConfig{
 		logger:           slog.Default(),
 		headersToLog:     make(map[string]struct{}),
-		sensitiveHeaders: canonicalHeaderSet(defaultSensitiveHeaders),
+		sensitiveHeaders: defaultSensitiveHeaders,
 	}
 
 	if opts == nil {
@@ -102,17 +97,17 @@ func buildLoggingConfig(opts *RequestLoggingOptions) loggingConfig {
 	}
 
 	if len(opts.HeadersToLog) > 0 {
-		cfg.headersToLog = canonicalHeaderSet(opts.HeadersToLog)
+		cfg.headersToLog = newHeaderSet(opts.HeadersToLog...)
 	}
 
 	if len(opts.SensitiveHeaders) > 0 {
-		cfg.sensitiveHeaders = canonicalHeaderSet(opts.SensitiveHeaders)
+		cfg.sensitiveHeaders = newHeaderSet(opts.SensitiveHeaders...)
 	}
 
 	return cfg
 }
 
-func canonicalHeaderSet(headers []string) map[string]struct{} {
+func newHeaderSet(headers ...string) map[string]struct{} {
 	set := make(map[string]struct{}, len(headers))
 	for _, h := range headers {
 		set[textproto.CanonicalMIMEHeaderKey(h)] = struct{}{}
@@ -129,9 +124,9 @@ func buildStartEvent(req *http.Request, cfg loggingConfig) eventData {
 		urlFull:        req.URL.String(),
 		urlScheme:      req.URL.Scheme,
 		serverAddress:  req.URL.Hostname(),
-		serverPort:     extractServerPort(req.URL),
+		serverPort:     getServerPort(req.URL),
 		userAgent:      req.Header.Get("User-Agent"),
-		requestHeaders: extractAllowedHeaders(req.Header, cfg.headersToLog, cfg.sensitiveHeaders),
+		requestHeaders: getAllowedHeaders(req.Header, cfg.headersToLog, cfg.sensitiveHeaders),
 	}
 
 	if req.ContentLength >= 0 {
@@ -150,7 +145,7 @@ func buildEndEvent(req *http.Request, resp *http.Response, err error, duration t
 		urlFull:       req.URL.String(),
 		urlScheme:     req.URL.Scheme,
 		serverAddress: req.URL.Hostname(),
-		serverPort:    extractServerPort(req.URL),
+		serverPort:    getServerPort(req.URL),
 		duration:      &seconds,
 	}
 
@@ -317,7 +312,8 @@ func buildHTTPClientAttrs(event eventData) slog.Attr {
 	)
 }
 
-func extractServerPort(u *url.URL) int {
+// getErrorType returns port of the url.
+func getServerPort(u *url.URL) int {
 	if u == nil {
 		return 0
 	}
@@ -337,70 +333,50 @@ func extractServerPort(u *url.URL) int {
 	}
 }
 
-// getErrorType prefers ErrorTyper, then falls back to root error type names.
+// getErrorType returns the root error type name.
 func getErrorType(err error) string {
 	if err == nil {
 		return ""
 	}
 
-	var typedErr ErrorTyper
-	if errors.As(err, &typedErr) {
-		if errorType := typedErr.ErrorType(); errorType != "" {
-			return errorType
-		}
-	}
-
-	root := err
-	for {
-		unwrapped := errors.Unwrap(root)
-		if unwrapped == nil {
-			break
-		}
-		root = unwrapped
-	}
-
-	t := reflect.TypeOf(root)
-	if t == nil {
-		return "error"
-	}
+	t := reflect.TypeOf(err)
 	for t.Kind() == reflect.Pointer {
 		t = t.Elem()
 	}
+
 	if name := t.Name(); name != "" {
 		return name
 	}
 
-	typeName := t.String()
-	if idx := strings.LastIndex(typeName, "."); idx >= 0 {
-		return typeName[idx+1:]
-	}
-	return typeName
+	return t.String()
 }
 
-// extractAllowedHeaders returns allowlisted headers with sensitive values redacted.
-func extractAllowedHeaders(headers http.Header, allowlist, sensitive map[string]struct{}) map[string]string {
-	if len(allowlist) == 0 {
+// getAllowedHeaders returns allowed headers with sensitive values redacted.
+func getAllowedHeaders(headers http.Header, allowed, sensitive map[string]struct{}) map[string]string {
+	if len(allowed) == 0 {
 		return nil
 	}
 
-	loggedHeaders := make(map[string]string)
-	for header := range allowlist {
-		value := headers.Get(header)
-		if value == "" {
+	logged := make(map[string]string, len(allowed))
+
+	for h := range allowed {
+		key := textproto.CanonicalMIMEHeaderKey(h)
+		values, ok := headers[key]
+		if !ok || len(values) == 0 {
 			continue
 		}
 
-		if _, redact := sensitive[textproto.CanonicalMIMEHeaderKey(header)]; redact {
-			loggedHeaders[header] = "***"
+		if _, isSensitive := sensitive[key]; isSensitive {
+			logged[h] = redacted
 			continue
 		}
 
-		loggedHeaders[header] = value
+		logged[h] = values[0]
 	}
 
-	if len(loggedHeaders) == 0 {
+	if len(logged) == 0 {
 		return nil
 	}
 
-	return loggedHeaders
+	return logged
 }

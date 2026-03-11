@@ -83,8 +83,6 @@ type typedErr struct{}
 
 func (typedErr) Error() string { return "typed" }
 
-func (typedErr) ErrorType() string { return "custom_error" }
-
 func TestAddRequestLogging_SuccessWithHeaders(t *testing.T) {
 	logger, sink := newCaptureLogger()
 
@@ -132,8 +130,8 @@ func TestAddRequestLogging_SuccessWithHeaders(t *testing.T) {
 	if got := start.attrs["http.request.method"]; got != http.MethodPost {
 		t.Fatalf("http.request.method = %q, want %q", got, http.MethodPost)
 	}
-	if got := start.attrs["http.request.header.authorization"]; got != "***" {
-		t.Fatalf("http.request.header.authorization = %q, want %q", got, "***")
+	if got := start.attrs["http.request.header.authorization"]; got != "REDACTED" {
+		t.Fatalf("http.request.header.authorization = %q, want %q", got, "REDACTED")
 	}
 	if got := start.attrs["http.request.header.x-correlation-id"]; got != "corr-1" {
 		t.Fatalf("http.request.header.x-correlation-id = %q, want %q", got, "corr-1")
@@ -225,7 +223,7 @@ func TestAddRequestLogging_TransportErrors(t *testing.T) {
 		err      error
 		wantType string
 	}{
-		{name: "typed error", err: typedErr{}, wantType: "custom_error"},
+		{name: "typed error", err: typedErr{}, wantType: "typedErr"},
 		{name: "generic error", err: errors.New("dial failed"), wantType: "errorString"},
 	}
 
