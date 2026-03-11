@@ -20,7 +20,7 @@ var defaultSensitiveHeaders = newHeaderSet(
 	"Set-Cookie",
 )
 
-type loggingConfig struct {
+type requestLoggingConfig struct {
 	logger           *slog.Logger
 	headersToLog     map[string]struct{}
 	sensitiveHeaders map[string]struct{}
@@ -81,8 +81,8 @@ func AddRequestLogging(opts *RequestLoggingOptions) interceptor.Middleware {
 }
 
 // buildLoggingConfig merges options with defaults and normalizes header names.
-func buildLoggingConfig(opts *RequestLoggingOptions) loggingConfig {
-	cfg := loggingConfig{
+func buildLoggingConfig(opts *RequestLoggingOptions) requestLoggingConfig {
+	cfg := requestLoggingConfig{
 		logger:           slog.Default(),
 		headersToLog:     make(map[string]struct{}),
 		sensitiveHeaders: defaultSensitiveHeaders,
@@ -116,7 +116,7 @@ func newHeaderSet(headers ...string) map[string]struct{} {
 }
 
 // buildStartEvent assembles attributes for the request-start log entry.
-func buildStartEvent(req *http.Request, cfg loggingConfig) eventData {
+func buildStartEvent(req *http.Request, cfg requestLoggingConfig) eventData {
 	e := eventData{
 		level:          slog.LevelInfo,
 		message:        "http request started",
@@ -189,7 +189,7 @@ func getLogLevel(resp *http.Response, err error) slog.Level {
 	return slog.LevelInfo
 }
 
-func emitLog(req *http.Request, cfg loggingConfig, event eventData) {
+func emitLog(req *http.Request, cfg requestLoggingConfig, event eventData) {
 	attrs := buildAttrs(event)
 	cfg.logger.LogAttrs(req.Context(), event.level, event.message, attrs...)
 }
