@@ -1,9 +1,11 @@
 package interceptors_test
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
@@ -20,19 +22,30 @@ import (
 type capturedRecord struct {
 	level slog.Level
 	msg   string
+	attrs map[string]any
 }
 
 type captureHandler struct {
 	mu      sync.Mutex
 	records []capturedRecord
+	level   slog.Level
 }
 
-func (h *captureHandler) Enabled(_ context.Context, _ slog.Level) bool { return true }
+func (h *captureHandler) Enabled(_ context.Context, level slog.Level) bool {
+	return level >= h.level
+}
 
 func (h *captureHandler) Handle(_ context.Context, r slog.Record) error {
 	h.mu.Lock()
 	defer h.mu.Unlock()
-	h.records = append(h.records, capturedRecord{level: r.Level, msg: r.Message})
+
+	attrs := make(map[string]any)
+	r.Attrs(func(a slog.Attr) bool {
+		resolveAttr(attrs, a)
+		return true
+	})
+
+	h.records = append(h.records, capturedRecord{level: r.Level, msg: r.Message, attrs: attrs})
 	return nil
 }
 
@@ -48,12 +61,24 @@ func (h *captureHandler) snapshot() []capturedRecord {
 	return out
 }
 
+func resolveAttr(dest map[string]any, a slog.Attr) {
+	if a.Value.Kind() == slog.KindGroup {
+		group := make(map[string]any)
+		for _, ga := range a.Value.Group() {
+			resolveAttr(group, ga)
+		}
+		dest[a.Key] = group
+		return
+	}
+	dest[a.Key] = a.Value.Any()
+}
+
 func newCaptureLogger() (*slog.Logger, *captureHandler) {
-	h := &captureHandler{}
+	h := &captureHandler{level: slog.LevelDebug}
 	return slog.New(h), h
 }
 
-func TestLoggingInterceptor_JSON_FlatKeys(t *testing.T) {
+func TestLoggingInterceptor_StructuredAttrs(t *testing.T) {
 	logger, sink := newCaptureLogger()
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -85,150 +110,17 @@ func TestLoggingInterceptor_JSON_FlatKeys(t *testing.T) {
 		t.Fatalf("len(records) = %d, want 2", len(records))
 	}
 
-	start := decodeJSONMap(t, records[0].msg)
-	if start["http.method"] != http.MethodGet {
-		t.Fatalf("http.method = %v, want %q", start["http.method"], http.MethodGet)
-	}
-	if start["http.url"] != server.URL+"/v1/users?page=2" {
-		t.Fatalf("http.url = %v", start["http.url"])
-	}
-	if start["http.target"] != "/v1/users?page=2" {
-		t.Fatalf("http.target = %v", start["http.target"])
-	}
-	if start["http.request_id"] != "abc-123" {
-		t.Fatalf("http.request_id = %v", start["http.request_id"])
-	}
+	start := records[0].attrs
+	assertGroupPathString(t, start, "http.request.method", http.MethodGet)
+	assertGroupPathString(t, start, "url.full", server.URL+"/v1/users?page=2")
+	assertGroupPathString(t, start, "url.scheme", "http")
+	assertGroupPathString(t, start, "user_agent.original", "interceptor-tests/1.0")
+	assertGroupPathString(t, start, "interceptor.request_id", "abc-123")
 
-	finish := decodeJSONMap(t, records[1].msg)
-	if finish["http.status_code"] != float64(http.StatusOK) {
-		t.Fatalf("http.status_code = %v, want %d", finish["http.status_code"], http.StatusOK)
-	}
-	if _, ok := finish["http.duration_ms"]; !ok {
-		t.Fatal("http.duration_ms missing")
-	}
-}
-
-func TestLoggingInterceptor_JSON_NestedKeys(t *testing.T) {
-	logger, sink := newCaptureLogger()
-
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusCreated)
-		_, _ = w.Write([]byte("ok"))
-	}))
-	t.Cleanup(server.Close)
-
-	client := &http.Client{Transport: interceptor.NewTransportInterceptor(nil,
-		interceptors.LoggingInterceptor(&interceptors.LoggingOptions{
-			Logger:   logger,
-			Format:   interceptors.LogFormatJSON,
-			KeyStyle: interceptors.KeyStyleNested,
-		}),
-	)}
-
-	resp, err := client.Post(server.URL+"/v1/orders", "text/plain", strings.NewReader("payload"))
-	if err != nil {
-		t.Fatalf("client.Post error: %v", err)
-	}
-	_ = resp.Body.Close()
-
-	records := sink.snapshot()
-	if len(records) != 2 {
-		t.Fatalf("len(records) = %d, want 2", len(records))
-	}
-
-	start := decodeJSONMap(t, records[0].msg)
-	if _, ok := start["@timestamp"]; !ok {
-		t.Fatal("@timestamp missing")
-	}
-	if start["message"] != "http request started" {
-		t.Fatalf("message = %v", start["message"])
-	}
-
-	httpMap := start["http"].(map[string]any)
-	requestMap := httpMap["request"].(map[string]any)
-	if requestMap["method"] != http.MethodPost {
-		t.Fatalf("http.request.method = %v", requestMap["method"])
-	}
-}
-
-func TestLoggingInterceptor_LogfmtFormat(t *testing.T) {
-	logger, sink := newCaptureLogger()
-
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusOK)
-	}))
-	t.Cleanup(server.Close)
-
-	client := &http.Client{Transport: interceptor.NewTransportInterceptor(nil,
-		interceptors.LoggingInterceptor(&interceptors.LoggingOptions{
-			Logger: logger,
-			Format: interceptors.LogFormatLogfmt,
-		}),
-	)}
-
-	req, err := http.NewRequest(http.MethodGet, server.URL+"/q with space", nil)
-	if err != nil {
-		t.Fatalf("http.NewRequest error: %v", err)
-	}
-
-	resp, err := client.Do(req)
-	if err != nil {
-		t.Fatalf("client.Do error: %v", err)
-	}
-	_ = resp.Body.Close()
-
-	records := sink.snapshot()
-	if len(records) != 2 {
-		t.Fatalf("len(records) = %d, want 2", len(records))
-	}
-
-	line := records[0].msg
-	if !strings.Contains(line, "level=INFO") {
-		t.Fatalf("line missing level=INFO: %s", line)
-	}
-	if !strings.Contains(line, "msg=\"http request started\"") {
-		t.Fatalf("line missing quoted msg: %s", line)
-	}
-	if !strings.Contains(line, "http.url=") {
-		t.Fatalf("line missing http.url: %s", line)
-	}
-}
-
-func TestLoggingInterceptor_TextFormat(t *testing.T) {
-	logger, sink := newCaptureLogger()
-
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusNoContent)
-	}))
-	t.Cleanup(server.Close)
-
-	client := &http.Client{Transport: interceptor.NewTransportInterceptor(nil,
-		interceptors.LoggingInterceptor(&interceptors.LoggingOptions{
-			Logger: logger,
-			Format: interceptors.LogFormatText,
-		}),
-	)}
-
-	resp, err := client.Get(server.URL)
-	if err != nil {
-		t.Fatalf("client.Get error: %v", err)
-	}
-	_ = resp.Body.Close()
-
-	records := sink.snapshot()
-	if len(records) != 2 {
-		t.Fatalf("len(records) = %d, want 2", len(records))
-	}
-
-	line := records[1].msg
-	if !strings.Contains(line, "http request completed") {
-		t.Fatalf("line missing completion message: %s", line)
-	}
-	if !strings.Contains(line, "GET") {
-		t.Fatalf("line missing method: %s", line)
-	}
-	if !strings.Contains(line, "204") {
-		t.Fatalf("line missing status code: %s", line)
+	finish := records[1].attrs
+	assertGroupPathInt64(t, finish, "http.response.status_code", int64(http.StatusOK))
+	if _, ok := getGroupPath(finish, "interceptor.duration_ms").(float64); !ok {
+		t.Fatal("interceptor.duration_ms missing")
 	}
 }
 
@@ -266,6 +158,7 @@ func TestLoggingInterceptor_StatusLevels(t *testing.T) {
 			if got := records[len(records)-1].level; got != tc.wantLevel {
 				t.Fatalf("final level = %v, want %v", got, tc.wantLevel)
 			}
+			assertGroupPathInt64(t, records[len(records)-1].attrs, "http.response.status_code", int64(tc.status))
 		})
 	}
 }
@@ -288,12 +181,55 @@ func TestLoggingInterceptor_TransportError(t *testing.T) {
 		t.Fatalf("len(records) = %d, want 2", len(records))
 	}
 
-	finish := decodeJSONMap(t, records[1].msg)
-	if finish["error.message"] == nil {
-		t.Fatalf("error.message missing: %v", finish)
-	}
+	assertGroupPathString(t, records[1].attrs, "error.type", "errorString")
 	if records[1].level != slog.LevelError {
 		t.Fatalf("level = %v, want ERROR", records[1].level)
+	}
+}
+
+func TestLoggingInterceptor_HTTPErrorStatusSetsErrorType(t *testing.T) {
+	logger, sink := newCaptureLogger()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusInternalServerError)
+	}))
+	t.Cleanup(server.Close)
+
+	client := &http.Client{Transport: interceptor.NewTransportInterceptor(nil,
+		interceptors.LoggingInterceptor(&interceptors.LoggingOptions{Logger: logger}),
+	)}
+
+	resp, err := client.Get(server.URL)
+	if err != nil {
+		t.Fatalf("client.Get error: %v", err)
+	}
+	_ = resp.Body.Close()
+
+	records := sink.snapshot()
+	assertGroupPathString(t, records[1].attrs, "error.type", "500")
+}
+
+func TestLoggingInterceptor_NoErrorTypeOnSuccess(t *testing.T) {
+	logger, sink := newCaptureLogger()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	t.Cleanup(server.Close)
+
+	client := &http.Client{Transport: interceptor.NewTransportInterceptor(nil,
+		interceptors.LoggingInterceptor(&interceptors.LoggingOptions{Logger: logger}),
+	)}
+
+	resp, err := client.Get(server.URL)
+	if err != nil {
+		t.Fatalf("client.Get error: %v", err)
+	}
+	_ = resp.Body.Close()
+
+	records := sink.snapshot()
+	if hasGroupPath(records[1].attrs, "error.type") {
+		t.Fatalf("error.type should not exist on successful response: %+v", records[1].attrs)
 	}
 }
 
@@ -317,13 +253,12 @@ func TestLoggingInterceptor_Duration(t *testing.T) {
 	_ = resp.Body.Close()
 
 	records := sink.snapshot()
-	finish := decodeJSONMap(t, records[1].msg)
-	duration, ok := finish["http.duration_ms"].(float64)
+	duration, ok := getGroupPath(records[1].attrs, "interceptor.duration_ms").(float64)
 	if !ok {
-		t.Fatalf("http.duration_ms has unexpected type: %T", finish["http.duration_ms"])
+		t.Fatalf("interceptor.duration_ms has unexpected type: %T", getGroupPath(records[1].attrs, "interceptor.duration_ms"))
 	}
 	if duration <= 0 {
-		t.Fatalf("http.duration_ms = %v, want > 0", duration)
+		t.Fatalf("interceptor.duration_ms = %v, want > 0", duration)
 	}
 }
 
@@ -352,14 +287,9 @@ func TestLoggingInterceptor_SensitiveHeaderRedaction(t *testing.T) {
 	}
 	_ = resp.Body.Close()
 
-	start := decodeJSONMap(t, sink.snapshot()[0].msg)
-	headers := start["http.request.headers"].(map[string]any)
-	if headers["Authorization"] != "***" {
-		t.Fatalf("Authorization = %v, want ***", headers["Authorization"])
-	}
-	if headers["Cookie"] != "***" {
-		t.Fatalf("Cookie = %v, want ***", headers["Cookie"])
-	}
+	start := sink.snapshot()[0].attrs
+	assertGroupPathString(t, start, "http.request.header.authorization", "***")
+	assertGroupPathString(t, start, "http.request.header.cookie", "***")
 }
 
 func TestLoggingInterceptor_CustomHeaders(t *testing.T) {
@@ -386,11 +316,8 @@ func TestLoggingInterceptor_CustomHeaders(t *testing.T) {
 	}
 	_ = resp.Body.Close()
 
-	start := decodeJSONMap(t, sink.snapshot()[0].msg)
-	headers := start["http.request.headers"].(map[string]any)
-	if headers["X-Correlation-Id"] != "corr-1" {
-		t.Fatalf("X-Correlation-Id = %v, want corr-1", headers["X-Correlation-Id"])
-	}
+	start := sink.snapshot()[0].attrs
+	assertGroupPathString(t, start, "http.request.header.x-correlation-id", "corr-1")
 }
 
 func TestLoggingInterceptor_NilOptions(t *testing.T) {
@@ -529,6 +456,232 @@ func TestLoggingInterceptor_RequestImmutability(t *testing.T) {
 	}
 }
 
+func TestLoggingInterceptor_WithJSONHandler(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(server.Close)
+
+	var out bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&out, nil))
+
+	client := &http.Client{Transport: interceptor.NewTransportInterceptor(nil,
+		interceptors.LoggingInterceptor(&interceptors.LoggingOptions{Logger: logger}),
+	)}
+
+	resp, err := client.Get(server.URL + "/json")
+	if err != nil {
+		t.Fatalf("client.Get error: %v", err)
+	}
+	_ = resp.Body.Close()
+
+	lines := splitLines(out.String())
+	if len(lines) != 2 {
+		t.Fatalf("expected 2 log lines, got %d", len(lines))
+	}
+
+	first := decodeJSONMap(t, lines[0])
+	httpMap, ok := first["http"].(map[string]any)
+	if !ok {
+		t.Fatalf("http group missing: %v", first)
+	}
+	requestMap := httpMap["request"].(map[string]any)
+	if requestMap["method"] != "GET" {
+		t.Fatalf("http.request.method = %v, want GET", requestMap["method"])
+	}
+}
+
+func TestLoggingInterceptor_WithTextHandler(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(server.Close)
+
+	var out bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&out, nil))
+
+	client := &http.Client{Transport: interceptor.NewTransportInterceptor(nil,
+		interceptors.LoggingInterceptor(&interceptors.LoggingOptions{Logger: logger}),
+	)}
+
+	resp, err := client.Get(server.URL + "/text")
+	if err != nil {
+		t.Fatalf("client.Get error: %v", err)
+	}
+	_ = resp.Body.Close()
+
+	output := out.String()
+	if !strings.Contains(output, "http.request.method=GET") {
+		t.Fatalf("TextHandler output missing grouped dotted key: %s", output)
+	}
+	if !strings.Contains(output, "url.full=") {
+		t.Fatalf("TextHandler output missing url.full: %s", output)
+	}
+}
+
+func TestLoggingInterceptor_HandlerOptions_ReplaceAttr(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(server.Close)
+
+	var out bytes.Buffer
+	seenHTTPRequestMethod := false
+	seenInterceptorDuration := false
+
+	logger := slog.New(slog.NewJSONHandler(&out, &slog.HandlerOptions{
+		ReplaceAttr: func(groups []string, a slog.Attr) slog.Attr {
+			if strings.Join(groups, ".") == "http.request" && a.Key == "method" {
+				seenHTTPRequestMethod = true
+				a.Value = slog.StringValue("OVERRIDDEN")
+			}
+			if strings.Join(groups, ".") == "interceptor" && a.Key == "duration_ms" {
+				seenInterceptorDuration = true
+			}
+			return a
+		},
+	}))
+
+	client := &http.Client{Transport: interceptor.NewTransportInterceptor(nil,
+		interceptors.LoggingInterceptor(&interceptors.LoggingOptions{Logger: logger}),
+	)}
+
+	resp, err := client.Get(server.URL)
+	if err != nil {
+		t.Fatalf("client.Get error: %v", err)
+	}
+	_ = resp.Body.Close()
+
+	if !seenHTTPRequestMethod {
+		t.Fatal("ReplaceAttr did not receive [http request] method")
+	}
+	if !seenInterceptorDuration {
+		t.Fatal("ReplaceAttr did not receive [interceptor] duration_ms")
+	}
+
+	lines := splitLines(out.String())
+	first := decodeJSONMap(t, lines[0])
+	httpMap := first["http"].(map[string]any)
+	requestMap := httpMap["request"].(map[string]any)
+	if requestMap["method"] != "OVERRIDDEN" {
+		t.Fatalf("http.request.method = %v, want OVERRIDDEN", requestMap["method"])
+	}
+}
+
+func TestLoggingInterceptor_HandlerOptions_Level(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(server.Close)
+
+	var out bytes.Buffer
+	logger := slog.New(slog.NewJSONHandler(&out, &slog.HandlerOptions{Level: slog.LevelError}))
+
+	client := &http.Client{Transport: interceptor.NewTransportInterceptor(nil,
+		interceptors.LoggingInterceptor(&interceptors.LoggingOptions{Logger: logger}),
+	)}
+
+	resp, err := client.Get(server.URL)
+	if err != nil {
+		t.Fatalf("client.Get error: %v", err)
+	}
+	_ = resp.Body.Close()
+
+	if strings.TrimSpace(out.String()) != "" {
+		t.Fatalf("expected no logs at error level for successful request, got %q", out.String())
+	}
+}
+
+func TestLoggingInterceptor_OTelAttributeNames(t *testing.T) {
+	logger, sink := newCaptureLogger()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", "3")
+		w.WriteHeader(http.StatusAccepted)
+		_, _ = w.Write([]byte("ok!"))
+	}))
+	t.Cleanup(server.Close)
+
+	client := &http.Client{Transport: interceptor.NewTransportInterceptor(nil,
+		interceptors.LoggingInterceptor(&interceptors.LoggingOptions{
+			Logger:       logger,
+			HeadersToLog: []string{"Content-Type"},
+		}),
+	)}
+
+	req, _ := http.NewRequest(http.MethodPost, server.URL+"/otel", strings.NewReader("abc"))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("User-Agent", "otel-test/1.0")
+
+	resp, err := client.Do(req)
+	if err != nil {
+		t.Fatalf("client.Do error: %v", err)
+	}
+	_ = resp.Body.Close()
+
+	start := sink.snapshot()[0].attrs
+	assertGroupPathString(t, start, "http.request.method", "POST")
+	assertGroupPathInt64(t, start, "http.request.body.size", 3)
+	assertGroupPathString(t, start, "http.request.header.content-type", "application/json")
+	assertGroupPathString(t, start, "url.full", server.URL+"/otel")
+	assertGroupPathString(t, start, "url.scheme", "http")
+	assertGroupPathString(t, start, "server.address", "127.0.0.1")
+	assertGroupPathInt64(t, start, "server.port", int64(mustServerPort(t, server.URL)))
+	assertGroupPathString(t, start, "user_agent.original", "otel-test/1.0")
+
+	finish := sink.snapshot()[1].attrs
+	assertGroupPathInt64(t, finish, "http.response.status_code", int64(http.StatusAccepted))
+	assertGroupPathInt64(t, finish, "http.response.body.size", 3)
+	assertGroupPathInt64(t, finish, "http.request.body.size", 3)
+	if hasGroupPath(finish, "http.target") {
+		t.Fatalf("http.target must not be emitted: %+v", finish)
+	}
+}
+
+func TestLoggingInterceptor_ServerAddressAndPort(t *testing.T) {
+	logger, sink := newCaptureLogger()
+
+	t.Run("implicit http port", func(t *testing.T) {
+		server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			w.WriteHeader(http.StatusOK)
+		}))
+		t.Cleanup(server.Close)
+
+		client := &http.Client{Transport: interceptor.NewTransportInterceptor(nil,
+			interceptors.LoggingInterceptor(&interceptors.LoggingOptions{Logger: logger}),
+		)}
+
+		resp, err := client.Get(server.URL)
+		if err != nil {
+			t.Fatalf("client.Get error: %v", err)
+		}
+		_ = resp.Body.Close()
+
+		records := sink.snapshot()
+		assertGroupPathString(t, records[len(records)-2].attrs, "server.address", "127.0.0.1")
+		assertGroupPathInt64(t, records[len(records)-2].attrs, "server.port", int64(mustServerPort(t, server.URL)))
+	})
+
+	t.Run("explicit https default port", func(t *testing.T) {
+		transport := interceptor.NewTransportInterceptor(roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+			return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader("ok"))}, nil
+		}), interceptors.LoggingInterceptor(&interceptors.LoggingOptions{Logger: logger}))
+
+		client := &http.Client{Transport: transport}
+		req, _ := http.NewRequest(http.MethodGet, "https://example.com/resource", nil)
+		resp, err := client.Do(req)
+		if err != nil {
+			t.Fatalf("client.Do error: %v", err)
+		}
+		_ = resp.Body.Close()
+
+		records := sink.snapshot()
+		start := records[len(records)-2].attrs
+		assertGroupPathString(t, start, "server.address", "example.com")
+		assertGroupPathInt64(t, start, "server.port", 443)
+	})
+}
+
 type roundTripperFunc func(req *http.Request) (*http.Response, error)
 
 func (f roundTripperFunc) RoundTrip(req *http.Request) (*http.Response, error) {
@@ -542,4 +695,90 @@ func decodeJSONMap(t *testing.T, line string) map[string]any {
 		t.Fatalf("json.Unmarshal(%q) error: %v", line, err)
 	}
 	return out
+}
+
+func splitLines(s string) []string {
+	parts := strings.Split(strings.TrimSpace(s), "\n")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		p = strings.TrimSpace(p)
+		if p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+func getGroupPath(attrs map[string]any, path string) any {
+	current := any(attrs)
+	for _, segment := range strings.Split(path, ".") {
+		m, ok := current.(map[string]any)
+		if !ok {
+			return nil
+		}
+		current, ok = m[segment]
+		if !ok {
+			return nil
+		}
+	}
+	return current
+}
+
+func hasGroupPath(attrs map[string]any, path string) bool {
+	return getGroupPath(attrs, path) != nil
+}
+
+func assertGroupPathString(t *testing.T, attrs map[string]any, path, want string) {
+	t.Helper()
+	got, ok := getGroupPath(attrs, path).(string)
+	if !ok {
+		t.Fatalf("%s has unexpected type: %T", path, getGroupPath(attrs, path))
+	}
+	if got != want {
+		t.Fatalf("%s = %q, want %q", path, got, want)
+	}
+}
+
+func assertGroupPathInt64(t *testing.T, attrs map[string]any, path string, want int64) {
+	t.Helper()
+	value := getGroupPath(attrs, path)
+	var got int64
+	switch v := value.(type) {
+	case int:
+		got = int64(v)
+	case int64:
+		got = v
+	case float64:
+		got = int64(v)
+	default:
+		t.Fatalf("%s has unexpected type: %T", path, value)
+	}
+	if got != want {
+		t.Fatalf("%s = %d, want %d", path, got, want)
+	}
+}
+
+func mustServerPort(t *testing.T, rawURL string) int {
+	t.Helper()
+	var hostPort string
+	if strings.HasPrefix(rawURL, "http://") {
+		hostPort = strings.TrimPrefix(rawURL, "http://")
+	} else if strings.HasPrefix(rawURL, "https://") {
+		hostPort = strings.TrimPrefix(rawURL, "https://")
+	} else {
+		t.Fatalf("unsupported URL: %s", rawURL)
+	}
+	if idx := strings.Index(hostPort, "/"); idx >= 0 {
+		hostPort = hostPort[:idx]
+	}
+	parts := strings.Split(hostPort, ":")
+	if len(parts) != 2 {
+		t.Fatalf("expected host:port in URL: %s", rawURL)
+	}
+	var port int
+	_, err := fmt.Sscanf(parts[1], "%d", &port)
+	if err != nil {
+		t.Fatalf("failed parsing port from %q: %v", rawURL, err)
+	}
+	return port
 }

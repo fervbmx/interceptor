@@ -1,12 +1,12 @@
 package interceptors
 
 import (
-	"encoding/json"
-	"fmt"
+	"errors"
 	"log/slog"
 	"net/http"
 	"net/textproto"
-	"sort"
+	"net/url"
+	"reflect"
 	"strconv"
 	"strings"
 	"time"
@@ -20,41 +20,11 @@ var defaultSensitiveHeaders = []string{
 	"Set-Cookie",
 }
 
-// LogFormat controls the log output format.
-type LogFormat int
-
-const (
-	// LogFormatJSON writes structured JSON logs.
-	LogFormatJSON LogFormat = iota
-	// LogFormatLogfmt writes logs in key=value format.
-	LogFormatLogfmt
-	// LogFormatText writes human-readable plain text logs.
-	LogFormatText
-)
-
-// KeyStyle controls the JSON key naming convention.
-type KeyStyle int
-
-const (
-	// KeyStyleFlat uses dotted keys like "http.method".
-	KeyStyleFlat KeyStyle = iota
-	// KeyStyleNested uses nested objects like "http.request.method".
-	KeyStyleNested
-)
-
 // LoggingOptions configures LoggingInterceptor behavior.
 type LoggingOptions struct {
-	// Logger receives rendered log lines.
+	// Logger receives structured attributes.
 	// If nil, slog.Default() is used.
 	Logger *slog.Logger
-
-	// Format selects log rendering format.
-	// Default: LogFormatJSON.
-	Format LogFormat
-
-	// KeyStyle chooses JSON key style when Format is LogFormatJSON.
-	// Default: KeyStyleFlat.
-	KeyStyle KeyStyle
 
 	// HeadersToLog is a request header allowlist.
 	// Empty means no additional headers are logged.
@@ -67,29 +37,26 @@ type LoggingOptions struct {
 
 type loggingConfig struct {
 	logger           *slog.Logger
-	format           LogFormat
-	keyStyle         KeyStyle
 	headersToLog     map[string]struct{}
 	sensitiveHeaders map[string]struct{}
 }
 
 type eventData struct {
-	timestamp             time.Time
-	level                 slog.Level
-	message               string
-	method                string
-	url                   string
-	target                string
-	host                  string
-	scheme                string
-	statusCode            *int
-	durationMS            *float64
-	userAgent             string
-	requestID             string
-	errorMessage          string
-	requestContentLength  *int64
-	responseContentLength *int64
-	requestHeaders        map[string]string
+	level            slog.Level
+	message          string
+	method           string
+	urlFull          string
+	urlScheme        string
+	serverAddress    string
+	serverPort       int
+	statusCode       *int
+	userAgent        string
+	errorType        string
+	requestBodySize  *int64
+	responseBodySize *int64
+	requestHeaders   map[string]string
+	durationMS       *float64
+	requestID        string
 }
 
 // LoggingInterceptor returns an interceptor that logs request lifecycle events.
@@ -115,10 +82,8 @@ func LoggingInterceptor(opts *LoggingOptions) interceptor.InterceptorFunc {
 
 func buildLoggingConfig(opts *LoggingOptions) loggingConfig {
 	cfg := loggingConfig{
-		logger:         slog.Default(),
-		format:         LogFormatJSON,
-		keyStyle:       KeyStyleFlat,
-		headersToLog:   make(map[string]struct{}),
+		logger:           slog.Default(),
+		headersToLog:     make(map[string]struct{}),
 		sensitiveHeaders: canonicalHeaderSet(defaultSensitiveHeaders),
 	}
 
@@ -128,14 +93,6 @@ func buildLoggingConfig(opts *LoggingOptions) loggingConfig {
 
 	if opts.Logger != nil {
 		cfg.logger = opts.Logger
-	}
-
-	if opts.Format != 0 {
-		cfg.format = opts.Format
-	}
-
-	if opts.KeyStyle != 0 {
-		cfg.keyStyle = opts.KeyStyle
 	}
 
 	if len(opts.HeadersToLog) > 0 {
@@ -159,21 +116,20 @@ func canonicalHeaderSet(headers []string) map[string]struct{} {
 
 func buildStartEvent(req *http.Request, cfg loggingConfig) eventData {
 	e := eventData{
-		timestamp:      time.Now().UTC(),
 		level:          slog.LevelInfo,
 		message:        "http request started",
 		method:         req.Method,
-		url:            req.URL.String(),
-		target:         req.URL.RequestURI(),
-		host:           req.URL.Hostname(),
-		scheme:         req.URL.Scheme,
+		urlFull:        req.URL.String(),
+		urlScheme:      req.URL.Scheme,
+		serverAddress:  req.URL.Hostname(),
+		serverPort:     extractServerPort(req.URL),
 		userAgent:      req.Header.Get("User-Agent"),
 		requestID:      req.Header.Get("X-Request-ID"),
 		requestHeaders: extractAllowedHeaders(req.Header, cfg.headersToLog, cfg.sensitiveHeaders),
 	}
 
 	if req.ContentLength >= 0 {
-	    e.requestContentLength = &req.ContentLength
+		e.requestBodySize = &req.ContentLength
 	}
 
 	return e
@@ -182,24 +138,33 @@ func buildStartEvent(req *http.Request, cfg loggingConfig) eventData {
 func buildEndEvent(req *http.Request, resp *http.Response, err error, duration time.Duration) eventData {
 	ms := float64(duration) / float64(time.Millisecond)
 	e := eventData{
-		timestamp:    time.Now().UTC(),
-		level:        getLogLevel(resp, err),
-		method:       req.Method,
-		url:          req.URL.String(),
-		durationMS:   &ms,
+		level:         getLogLevel(resp, err),
+		method:        req.Method,
+		urlFull:       req.URL.String(),
+		urlScheme:     req.URL.Scheme,
+		serverAddress: req.URL.Hostname(),
+		serverPort:    extractServerPort(req.URL),
+		durationMS:    &ms,
+	}
+
+	if req.ContentLength >= 0 {
+		e.requestBodySize = &req.ContentLength
 	}
 
 	if err != nil {
 		e.message = "http request failed"
-		e.errorMessage = err.Error()
+		e.errorType = classifyErrorType(err)
 		return e
 	}
 
 	e.message = "http request completed"
 	if resp != nil {
 		e.statusCode = &resp.StatusCode
-		if req.ContentLength >= 0 {
-		    e.requestContentLength = &req.ContentLength
+		if resp.ContentLength >= 0 {
+			e.responseBodySize = &resp.ContentLength
+		}
+		if resp.StatusCode >= http.StatusBadRequest {
+			e.errorType = strconv.Itoa(resp.StatusCode)
 		}
 	}
 
@@ -223,241 +188,126 @@ func getLogLevel(resp *http.Response, err error) slog.Level {
 }
 
 func emitLog(req *http.Request, cfg loggingConfig, event eventData) {
-	line := renderEvent(cfg, event)
-	cfg.logger.Log(req.Context(), event.level, line)
-}
-
-func renderEvent(cfg loggingConfig, event eventData) string {
-	switch cfg.format {
-	case LogFormatLogfmt:
-		return renderLogfmt(event)
-	case LogFormatText:
-		return renderText(event)
-	default:
-		if cfg.keyStyle == KeyStyleNested {
-			return renderJSONNested(event)
-		}
-		return renderJSONFlat(event)
-	}
-}
-
-func renderJSONFlat(event eventData) string {
-	payload := map[string]any{
-		"timestamp":   event.timestamp.Format(time.RFC3339Nano),
-		"level":       strings.ToUpper(event.level.String()),
-		"msg":         event.message,
-		"http.method": event.method,
-		"http.url":    event.url,
-	}
-
-	if event.target != "" {
-		payload["http.target"] = event.target
-	}
-	if event.host != "" {
-		payload["http.host"] = event.host
-	}
-	if event.scheme != "" {
-		payload["http.scheme"] = event.scheme
-	}
-	if event.requestContentLength != nil {
-		payload["http.request_content_length"] = *event.requestContentLength
-	}
-	if event.responseContentLength != nil {
-		payload["http.response_content_length"] = *event.responseContentLength
-	}
-	if event.statusCode != nil {
-		payload["http.status_code"] = *event.statusCode
-	}
-	if event.durationMS != nil {
-		payload["http.duration_ms"] = *event.durationMS
-	}
-	if event.userAgent != "" {
-		payload["user_agent.original"] = event.userAgent
-	}
-	if event.requestID != "" {
-		payload["http.request_id"] = event.requestID
-	}
-	if event.errorMessage != "" {
-		payload["error.message"] = event.errorMessage
-	}
-	if len(event.requestHeaders) > 0 {
-		payload["http.request.headers"] = event.requestHeaders
-	}
-
-	b, err := json.Marshal(payload)
-	if err != nil {
-		return "{}"
-	}
-	return string(b)
-}
-
-func renderJSONNested(event eventData) string {
-	payload := map[string]any{
-		"@timestamp": event.timestamp.Format(time.RFC3339Nano),
-		"log": map[string]any{
-			"level": strings.ToUpper(event.level.String()),
-		},
-		"message": event.message,
-		"http": map[string]any{
-			"request": map[string]any{
-				"method": event.method,
-			},
-		},
-		"url": map[string]any{
-			"full": event.url,
-		},
-	}
-
-	httpMap := payload["http"].(map[string]any)
-	requestMap := httpMap["request"].(map[string]any)
-	urlMap := payload["url"].(map[string]any)
-
-	if event.target != "" {
-		urlMap["path"] = event.target
-	}
-	if event.host != "" {
-		urlMap["domain"] = event.host
-	}
-	if event.scheme != "" {
-		urlMap["scheme"] = event.scheme
-	}
-	if event.requestContentLength != nil {
-		requestMap["body"] = map[string]any{"bytes": *event.requestContentLength}
-	}
-	if event.requestID != "" {
-		requestMap["id"] = event.requestID
-	}
-	if event.userAgent != "" {
-		payload["user_agent"] = map[string]any{"original": event.userAgent}
-	}
-	if event.statusCode != nil {
-		httpMap["response"] = map[string]any{"status_code": *event.statusCode}
-	}
-	if event.responseContentLength != nil {
-		responseMap, ok := httpMap["response"].(map[string]any)
-		if !ok {
-			responseMap = map[string]any{}
-			httpMap["response"] = responseMap
-		}
-		responseMap["body"] = map[string]any{"bytes": *event.responseContentLength}
-	}
-	if event.durationMS != nil {
-		payload["event"] = map[string]any{"duration": *event.durationMS}
-	}
-	if event.errorMessage != "" {
-		payload["error"] = map[string]any{"message": event.errorMessage}
-	}
-	if len(event.requestHeaders) > 0 {
-		requestMap["headers"] = event.requestHeaders
-	}
-
-	b, err := json.Marshal(payload)
-	if err != nil {
-		return "{}"
-	}
-	return string(b)
-}
-
-func renderLogfmt(event eventData) string {
-	parts := []string{
-		"timestamp=" + encodeLogfmtValue(event.timestamp.Format(time.RFC3339Nano)),
-		"level=" + encodeLogfmtValue(strings.ToUpper(event.level.String())),
-		"msg=" + encodeLogfmtValue(event.message),
-		"http.method=" + encodeLogfmtValue(event.method),
-		"http.url=" + encodeLogfmtValue(event.url),
-	}
-
-	if event.target != "" {
-		parts = append(parts, "http.target="+encodeLogfmtValue(event.target))
-	}
-	if event.host != "" {
-		parts = append(parts, "http.host="+encodeLogfmtValue(event.host))
-	}
-	if event.scheme != "" {
-		parts = append(parts, "http.scheme="+encodeLogfmtValue(event.scheme))
-	}
-	if event.requestContentLength != nil {
-		parts = append(parts, "http.request_content_length="+strconv.FormatInt(*event.requestContentLength, 10))
-	}
-	if event.responseContentLength != nil {
-		parts = append(parts, "http.response_content_length="+strconv.FormatInt(*event.responseContentLength, 10))
-	}
-	if event.statusCode != nil {
-		parts = append(parts, "http.status_code="+strconv.Itoa(*event.statusCode))
-	}
-	if event.durationMS != nil {
-		parts = append(parts, "http.duration_ms="+strconv.FormatFloat(*event.durationMS, 'f', 3, 64))
-	}
-	if event.userAgent != "" {
-		parts = append(parts, "user_agent.original="+encodeLogfmtValue(event.userAgent))
-	}
-	if event.requestID != "" {
-		parts = append(parts, "http.request_id="+encodeLogfmtValue(event.requestID))
-	}
-	if event.errorMessage != "" {
-		parts = append(parts, "error.message="+encodeLogfmtValue(event.errorMessage))
-	}
-
-	if len(event.requestHeaders) > 0 {
-		headerKeys := make([]string, 0, len(event.requestHeaders))
-		for k := range event.requestHeaders {
-			headerKeys = append(headerKeys, k)
-		}
-		sort.Strings(headerKeys)
-		for _, key := range headerKeys {
-			parts = append(parts, "http.request.header."+sanitizeHeaderFieldKey(key)+"="+encodeLogfmtValue(event.requestHeaders[key]))
-		}
-	}
-
-	return strings.Join(parts, " ")
-}
-
-func renderText(event eventData) string {
-	duration := ""
-	if event.durationMS != nil {
-		duration = fmt.Sprintf(" %.2fms", *event.durationMS)
-	}
-
-	status := ""
-	if event.statusCode != nil {
-		status = fmt.Sprintf(" %d", *event.statusCode)
-	}
-
-	line := fmt.Sprintf(
-		"%s %s %s %s %s%s%s",
-		event.timestamp.Format(time.RFC3339Nano),
-		strings.ToUpper(event.level.String()),
-		event.message,
-		event.method,
-		event.url,
-		status,
-		duration,
-	)
-
-	if event.errorMessage != "" {
-		line += fmt.Sprintf(" error=%q", event.errorMessage)
-	}
-
-	return line
-}
-
-func encodeLogfmtValue(value string) string {
-	if value == "" {
-		return "\"\""
-	}
-
-	if strings.ContainsAny(value, " \t\n\r\"=") {
-		replacer := strings.NewReplacer("\\", "\\\\", "\"", "\\\"")
-		return "\"" + replacer.Replace(value) + "\""
-	}
-
-	return value
+	attrs := buildAttrs(event)
+	cfg.logger.LogAttrs(req.Context(), event.level, event.message, attrs...)
 }
 
 func sanitizeHeaderFieldKey(key string) string {
 	key = strings.ToLower(key)
-	key = strings.ReplaceAll(key, "-", "_")
 	return key
+}
+
+func buildAttrs(event eventData) []slog.Attr {
+	attrs := make([]slog.Attr, 0, 6)
+
+	requestAttrs := []any{slog.String("method", event.method)}
+	if event.requestBodySize != nil {
+		requestAttrs = append(requestAttrs, slog.Group("body", slog.Int64("size", *event.requestBodySize)))
+	}
+	if len(event.requestHeaders) > 0 {
+		headerAttrs := make([]any, 0, len(event.requestHeaders))
+		for key, value := range event.requestHeaders {
+			headerAttrs = append(headerAttrs, slog.String(sanitizeHeaderFieldKey(key), value))
+		}
+		requestAttrs = append(requestAttrs, slog.Group("header", headerAttrs...))
+	}
+
+	httpAttrs := []any{slog.Group("request", requestAttrs...)}
+	if event.statusCode != nil || event.responseBodySize != nil {
+		responseAttrs := make([]any, 0, 2)
+		if event.statusCode != nil {
+			responseAttrs = append(responseAttrs, slog.Int("status_code", *event.statusCode))
+		}
+		if event.responseBodySize != nil {
+			responseAttrs = append(responseAttrs, slog.Group("body", slog.Int64("size", *event.responseBodySize)))
+		}
+		httpAttrs = append(httpAttrs, slog.Group("response", responseAttrs...))
+	}
+	attrs = append(attrs, slog.Group("http", httpAttrs...))
+
+	urlAttrs := []any{slog.String("full", event.urlFull)}
+	if event.urlScheme != "" {
+		urlAttrs = append(urlAttrs, slog.String("scheme", event.urlScheme))
+	}
+	attrs = append(attrs, slog.Group("url", urlAttrs...))
+
+	serverAttrs := []any{slog.String("address", event.serverAddress)}
+	if event.serverPort > 0 {
+		serverAttrs = append(serverAttrs, slog.Int("port", event.serverPort))
+	}
+	attrs = append(attrs, slog.Group("server", serverAttrs...))
+
+	if event.userAgent != "" {
+		attrs = append(attrs, slog.Group("user_agent", slog.String("original", event.userAgent)))
+	}
+	if event.errorType != "" {
+		attrs = append(attrs, slog.Group("error", slog.String("type", event.errorType)))
+	}
+
+	interceptorAttrs := make([]any, 0, 2)
+	if event.durationMS != nil {
+		interceptorAttrs = append(interceptorAttrs, slog.Float64("duration_ms", *event.durationMS))
+	}
+	if event.requestID != "" {
+		interceptorAttrs = append(interceptorAttrs, slog.String("request_id", event.requestID))
+	}
+	if len(interceptorAttrs) > 0 {
+		attrs = append(attrs, slog.Group("interceptor", interceptorAttrs...))
+	}
+
+	return attrs
+}
+
+func extractServerPort(u *url.URL) int {
+	if u == nil {
+		return 0
+	}
+	if port := u.Port(); port != "" {
+		value, err := strconv.Atoi(port)
+		if err == nil {
+			return value
+		}
+	}
+	switch strings.ToLower(u.Scheme) {
+	case "http":
+		return 80
+	case "https":
+		return 443
+	default:
+		return 0
+	}
+}
+
+func classifyErrorType(err error) string {
+	if err == nil {
+		return ""
+	}
+
+	root := err
+	for {
+		unwrapped := errors.Unwrap(root)
+		if unwrapped == nil {
+			break
+		}
+		root = unwrapped
+	}
+
+	t := reflect.TypeOf(root)
+	if t == nil {
+		return "error"
+	}
+	for t.Kind() == reflect.Pointer {
+		t = t.Elem()
+	}
+	if name := t.Name(); name != "" {
+		return name
+	}
+
+	typeName := t.String()
+	if idx := strings.LastIndex(typeName, "."); idx >= 0 {
+		return typeName[idx+1:]
+	}
+	return typeName
 }
 
 func extractAllowedHeaders(headers http.Header, allowlist, sensitive map[string]struct{}) map[string]string {
