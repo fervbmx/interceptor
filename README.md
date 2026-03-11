@@ -10,35 +10,47 @@ go get github.com/fervbmx/interceptor
 
 ## Usage
 
+Import both packages:
+
 ```go
-// Flow: HeaderInterceptor → BasicAuthInterceptor → http.DefaultTransport
+import (
+    "net/http"
+
+    "github.com/fervbmx/interceptor"
+    "github.com/fervbmx/interceptor/interceptors"
+)
+```
+
+```go
+// Flow: RequestLogging → Header → BasicAuth → http.DefaultTransport
 client := &http.Client{
-    Transport: interceptor.NewTransportInterceptor(
+    Transport: interceptor.NewTransport(
         nil,
-        interceptors.HeaderInterceptor("X-API-KEY", "secret"),
-        interceptors.BasicAuthInterceptor("user", "pass"),
+        interceptors.Header("X-API-KEY", "secret"),
+        interceptors.BasicAuth("user", "pass"),
+        interceptors.RequestLogging(nil),
     ),
 }
 ```
 
-Pass `nil` as the first argument to use `http.DefaultTransport`, or provide your own `http.RoundTripper`.
+Pass `nil` as the first argument to use `http.DefaultTransport`, or pass a custom `http.RoundTripper` as the base transport.
 
 ## Built-in interceptors
 
 | Interceptor | Description |
 |---|---|
-| `HeaderInterceptor(key, value)` | Sets a header on every request |
-| `BasicAuthInterceptor(user, password)` | Sets Basic authentication |
+| `Header(key, value)` | Sets a header on every request |
+| `BasicAuth(user, password)` | Sets Basic authentication |
+| `RequestLogging(opts)` | Emits structured `slog` attributes |
 
 ## Custom interceptors
 
-Write your own `InterceptorFunc` to hook into the request/response lifecycle. Call `next` to continue the chain, or return early to short-circuit it.
+Write your own `interceptor.Middleware` to hook into the request/response lifecycle. Call `next` to continue the chain, or return early to short-circuit it.
 
 ```go
 // Log every request and its status code.
-func LogginInterceptor(req *http.Request, next interceptor.HandlerFunc) (*http.Response, error) {
+func Logging(req *http.Request, next interceptor.HandlerFunc) (*http.Response, error) {
     log.Printf("→ %s %s", req.Method, req.URL)
-
     resp, err := next(req)
     if err != nil {
         return nil, err
@@ -48,9 +60,9 @@ func LogginInterceptor(req *http.Request, next interceptor.HandlerFunc) (*http.R
 }
 
 client := &http.Client{
-    Transport: interceptor.NewTransportInterceptor(
+    Transport: interceptor.NewTransport(
         http.DefaultTransport,
-        interceptor.LogginInterceptor
+        Logging,
     ),
 }
 ```

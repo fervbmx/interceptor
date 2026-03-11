@@ -33,19 +33,19 @@ func TestHeaderInterceptor(t *testing.T) {
 		},
 	}
 
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
 			var header string
 
 			server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				header = r.Header.Get(c.key)
+				header = r.Header.Get(tc.key)
 			}))
 			t.Cleanup(server.Close)
 
 			client := http.Client{
-				Transport: interceptor.NewTransportInterceptor(
+				Transport: interceptor.NewTransport(
 					http.DefaultTransport,
-					interceptors.HeaderInterceptor(c.key, c.value),
+					interceptors.Header(tc.key, tc.value),
 				),
 				Timeout: 15 * time.Second,
 			}
@@ -54,13 +54,14 @@ func TestHeaderInterceptor(t *testing.T) {
 			if err != nil {
 				t.Fatalf("client.Get() returned error: %v", err)
 			}
+			defer resp.Body.Close()
 
-			if resp.StatusCode != 200 {
+			if resp.StatusCode != http.StatusOK {
 				t.Fatalf("unexpected status code: %d", resp.StatusCode)
 			}
 
-			if header != c.value {
-				t.Errorf("Header %q = %q, want %q", c.key, header, c.value)
+			if header != tc.value {
+				t.Errorf("Header %q = %q, want %q", tc.key, header, tc.value)
 			}
 		})
 	}

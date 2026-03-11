@@ -6,16 +6,16 @@ import (
 	"github.com/fervbmx/interceptor"
 )
 
-// BasicAuthInterceptor returns an interceptor that sets Basic authentication on every
+// BasicAuth returns an interceptor that sets Basic authentication on every
 // outgoing request.
 //
-//	interceptor.NewTransportInterceptor(nil,
-//	    interceptors.BasicAuthInterceptor("username", "password"),
+//	interceptor.NewTransport(nil,
+//	    interceptors.BasicAuth("username", "password"),
 //	)
-func BasicAuthInterceptor(username, password string) interceptor.InterceptorFunc {
+func BasicAuth(username, password string) interceptor.Middleware {
 	return func(req *http.Request, next interceptor.HandlerFunc) (*http.Response, error) {
-		req = req.Clone(req.Context())
-		req.SetBasicAuth(username, password)
-		return next(req)
+		clonedReq := req.Clone(req.Context())
+		clonedReq.SetBasicAuth(username, password)
+		return next(clonedReq)
 	}
 }

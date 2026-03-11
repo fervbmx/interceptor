@@ -10,7 +10,7 @@ import (
 	"github.com/fervbmx/interceptor/interceptors"
 )
 
-func TestBasicAuthInterceptor(t *testing.T) {
+func TestBasicAuth(t *testing.T) {
 	cases := []struct {
 		name     string
 		username string
@@ -28,8 +28,8 @@ func TestBasicAuthInterceptor(t *testing.T) {
 		},
 	}
 
-	for _, c := range cases {
-		t.Run(c.name, func(t *testing.T) {
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
 			var username, password string
 			var ok bool
 
@@ -39,9 +39,9 @@ func TestBasicAuthInterceptor(t *testing.T) {
 			t.Cleanup(server.Close)
 
 			client := http.Client{
-				Transport: interceptor.NewTransportInterceptor(
+				Transport: interceptor.NewTransport(
 					http.DefaultTransport,
-					interceptors.BasicAuthInterceptor(c.username, c.password),
+					interceptors.BasicAuth(tc.username, tc.password),
 				),
 				Timeout: 15 * time.Second,
 			}
@@ -50,8 +50,9 @@ func TestBasicAuthInterceptor(t *testing.T) {
 			if err != nil {
 				t.Fatalf("client.Get() returned error: %v", err)
 			}
+			defer resp.Body.Close()
 
-			if resp.StatusCode != 200 {
+			if resp.StatusCode != http.StatusOK {
 				t.Fatalf("unexpected status code: %d", resp.StatusCode)
 			}
 
@@ -59,12 +60,12 @@ func TestBasicAuthInterceptor(t *testing.T) {
 				t.Fatal("BasicAuth() returned ok=false, want true")
 			}
 
-			if username != c.username {
-				t.Errorf("username = %q, want %q", username, c.username)
+			if username != tc.username {
+				t.Errorf("username = %q, want %q", username, tc.username)
 			}
 
-			if password != c.password {
-				t.Errorf("password = %q, want %q", password, c.password)
+			if password != tc.password {
+				t.Errorf("password = %q, want %q", password, tc.password)
 			}
 		})
 	}

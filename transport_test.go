@@ -9,7 +9,7 @@ import (
 	"github.com/fervbmx/interceptor"
 )
 
-func TestTransportInterceptor(t *testing.T) {
+func TestTransport(t *testing.T) {
 	var order []string
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
@@ -24,7 +24,7 @@ func TestTransportInterceptor(t *testing.T) {
 		return next(req)
 	}
 
-	tp := interceptor.NewTransportInterceptor(nil, aInterceptor)
+	tp := interceptor.NewTransport(nil, aInterceptor)
 	tp.Use(bInterceptor)
 
 	client := &http.Client{
@@ -36,8 +36,9 @@ func TestTransportInterceptor(t *testing.T) {
 	if err != nil {
 		t.Fatalf("client.Get() returned error: %v", err)
 	}
+	defer resp.Body.Close()
 
-	if resp.StatusCode != 200 {
+	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("unexpected status code: %d", resp.StatusCode)
 	}
 
