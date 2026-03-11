@@ -56,13 +56,12 @@ type RequestLoggingOptions struct {
 // completion event or a failure event. If opts is nil, default logging options
 // are used.
 //
-// interceptor.NewTransport(nil,
-//
-//	interceptors.RequestLogging(
-//		Logging: logging
-//	),
-//
-// )
+//	interceptor.NewTransport(nil,
+//	    interceptors.RequestLogging(&interceptors.RequestLoggingOptions{
+//	        HeadersToLog: []string{"User-Agent"},
+//	    }),
+//	)
+
 func RequestLogging(opts *RequestLoggingOptions) interceptor.Middleware {
 	cfg := buildLoggingConfig(opts)
 
