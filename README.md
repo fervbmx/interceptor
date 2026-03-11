@@ -10,19 +10,30 @@ go get github.com/fervbmx/interceptor
 
 ## Usage
 
+Import both packages:
+
+```go
+import (
+    "net/http"
+
+    "github.com/fervbmx/interceptor"
+    "github.com/fervbmx/interceptor/interceptors"
+)
+```
+
 ```go
 // Flow: AddRequestLogging → AddHeader → AddBasicAuth → http.DefaultTransport
 client := &http.Client{
     Transport: interceptor.NewTransport(
         nil,
-        interceptors.AddRequestLogging(nil),
         interceptors.AddHeader("X-API-KEY", "secret"),
         interceptors.AddBasicAuth("user", "pass"),
+        interceptors.AddRequestLogging(nil),
     ),
 }
 ```
 
-Pass `nil` as the first argument to use `http.DefaultTransport`, or provide your own `http.RoundTripper`.
+Pass `nil` as the first argument to use `http.DefaultTransport`, or pass a custom `http.RoundTripper` as the base transport.
 
 ## Built-in interceptors
 
@@ -32,8 +43,6 @@ Pass `nil` as the first argument to use `http.DefaultTransport`, or provide your
 | `AddBasicAuth(user, password)` | Sets Basic authentication |
 | `AddRequestLogging(opts)` | Emits structured `slog` attributes |
 
-`AddRequestLogging` emits request duration as `http.client.request.duration` using seconds as the unit (UCUM `s`).
-
 ## Custom interceptors
 
 Write your own `interceptor.Middleware` to hook into the request/response lifecycle. Call `next` to continue the chain, or return early to short-circuit it.
@@ -42,7 +51,6 @@ Write your own `interceptor.Middleware` to hook into the request/response lifecy
 // Log every request and its status code.
 func Logging(req *http.Request, next interceptor.HandlerFunc) (*http.Response, error) {
     log.Printf("→ %s %s", req.Method, req.URL)
-
     resp, err := next(req)
     if err != nil {
         return nil, err
@@ -54,7 +62,7 @@ func Logging(req *http.Request, next interceptor.HandlerFunc) (*http.Response, e
 client := &http.Client{
     Transport: interceptor.NewTransport(
         http.DefaultTransport,
-        Logging
+        Logging,
     ),
 }
 ```

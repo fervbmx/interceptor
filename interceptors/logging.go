@@ -20,14 +20,6 @@ var defaultSensitiveHeaders = []string{
 	"Set-Cookie",
 }
 
-type LoggingOptions struct {
-	Logger *slog.Logger
-
-	HeadersToLog []string
-
-	SensitiveHeaders []string
-}
-
 type loggingConfig struct {
 	logger           *slog.Logger
 	headersToLog     map[string]struct{}
@@ -51,6 +43,14 @@ type eventData struct {
 	duration         *float64
 }
 
+// RequestLoggingOptions configures request logging behavior.
+type RequestLoggingOptions struct {
+	Logger           *slog.Logger
+	HeadersToLog     []string
+	SensitiveHeaders []string
+}
+
+// ErrorTyper is implemented by errors that can expose a stable error type.
 type ErrorTyper interface {
 	ErrorType() string
 }
@@ -60,12 +60,12 @@ type ErrorTyper interface {
 // completion event or a failure event. If opts is nil, default logging options
 // are used.
 //
-//		interceptor.NewTransport(nil,
-//		    interceptors.AddRequestLogging(
-//	         Logging: logging
-//	     ),
-//		)
-func AddRequestLogging(opts *LoggingOptions) interceptor.Middleware {
+// interceptor.NewTransport(nil,
+// 		interceptors.AddRequestLogging(
+// 			Logging: logging
+// 		),
+// )
+func AddRequestLogging(opts *RequestLoggingOptions) interceptor.Middleware {
 	cfg := buildLoggingConfig(opts)
 
 	return func(req *http.Request, next interceptor.HandlerFunc) (*http.Response, error) {
@@ -85,7 +85,8 @@ func AddRequestLogging(opts *LoggingOptions) interceptor.Middleware {
 	}
 }
 
-func buildLoggingConfig(opts *LoggingOptions) loggingConfig {
+// buildLoggingConfig merges options with defaults and normalizes header names.
+func buildLoggingConfig(opts *RequestLoggingOptions) loggingConfig {
 	cfg := loggingConfig{
 		logger:           slog.Default(),
 		headersToLog:     make(map[string]struct{}),
@@ -119,6 +120,7 @@ func canonicalHeaderSet(headers []string) map[string]struct{} {
 	return set
 }
 
+// buildStartEvent assembles attributes for the request-start log entry.
 func buildStartEvent(req *http.Request, cfg loggingConfig) eventData {
 	e := eventData{
 		level:          slog.LevelInfo,
@@ -139,6 +141,7 @@ func buildStartEvent(req *http.Request, cfg loggingConfig) eventData {
 	return e
 }
 
+// buildEndEvent assembles attributes for completion and failure log entries.
 func buildEndEvent(req *http.Request, resp *http.Response, err error, duration time.Duration) eventData {
 	seconds := duration.Seconds()
 	e := eventData{
@@ -157,7 +160,7 @@ func buildEndEvent(req *http.Request, resp *http.Response, err error, duration t
 
 	if err != nil {
 		e.message = "http request failed"
-		e.errorType = classifyErrorType(err)
+		e.errorType = getErrorType(err)
 		return e
 	}
 
@@ -289,7 +292,6 @@ func buildHTTPResponseAttrs(event eventData) slog.Attr {
 	}
 
 	attrs := make([]any, 0, 2)
-
 	if event.statusCode != nil {
 		attrs = append(attrs, slog.Int("status_code", *event.statusCode))
 	}
@@ -335,7 +337,8 @@ func extractServerPort(u *url.URL) int {
 	}
 }
 
-func classifyErrorType(err error) string {
+// getErrorType prefers ErrorTyper, then falls back to root error type names.
+func getErrorType(err error) string {
 	if err == nil {
 		return ""
 	}
@@ -374,6 +377,7 @@ func classifyErrorType(err error) string {
 	return typeName
 }
 
+// extractAllowedHeaders returns allowlisted headers with sensitive values redacted.
 func extractAllowedHeaders(headers http.Header, allowlist, sensitive map[string]struct{}) map[string]string {
 	if len(allowlist) == 0 {
 		return nil

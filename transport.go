@@ -25,15 +25,15 @@ type Transport struct {
 // and interceptors. If defaultTransport is nil, http.DefaultTransport is used.
 // Interceptors are executed in the order provided.
 //
-//	// Using the default transport:
-//	client := &http.Client{
-//	    Transport: interceptor.NewTransport(nil, AInterceptor, BInterceptor),
-//	}
+// // Using the default transport:
+// client := &http.Client{
+// 		Transport: interceptor.NewTransport(nil, AInterceptor, BInterceptor),
+// }
 //
-//	// Using a custom default transport:
-//	client := &http.Client{
-//	    Transport: interceptor.NewTransport(customTransport, AInterceptor, BInterceptor),
-//	}
+// // Using a custom default transport:
+// client := &http.Client{
+// 		Transport: interceptor.NewTransport(customTransport, AInterceptor, BInterceptor),
+// }
 func NewTransport(defaultTransport http.RoundTripper, interceptors ...Middleware) *Transport {
 	if defaultTransport == nil {
 		defaultTransport = http.DefaultTransport
@@ -47,7 +47,7 @@ func NewTransport(defaultTransport http.RoundTripper, interceptors ...Middleware
 // Add appends one or more interceptors to the chain. They are appended after
 // any interceptors already registered.
 //
-//	t := interceptor.NewTransport(nil, AuthInterceptor).Add(MetricsInterceptor)
+// t := interceptor.NewTransport(nil, AuthInterceptor).Add(MetricsInterceptor)
 func (t *Transport) Add(interceptors ...Middleware) *Transport {
 	t.interceptors = append(t.interceptors, interceptors...)
 	return t
