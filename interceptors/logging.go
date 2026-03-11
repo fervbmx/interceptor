@@ -20,7 +20,7 @@ var defaultSensitiveHeaders = []string{
 	"Set-Cookie",
 }
 
-// LoggingOptions configures LoggingInterceptor behavior.
+// LoggingOptions configures AddRequestLogging behavior.
 type LoggingOptions struct {
 	// Logger receives structured attributes.
 	// If nil, slog.Default() is used.
@@ -59,8 +59,14 @@ type eventData struct {
 	requestID        string
 }
 
-// LoggingInterceptor returns an interceptor that logs request lifecycle events.
-func LoggingInterceptor(opts *LoggingOptions) interceptor.InterceptorFunc {
+// ErrorTyper can be implemented by error types to provide a stable,
+// human-readable classification label for structured logs.
+type ErrorTyper interface {
+	ErrorType() string
+}
+
+// AddRequestLogging returns an interceptor that logs request lifecycle events.
+func AddRequestLogging(opts *LoggingOptions) interceptor.Middleware {
 	cfg := buildLoggingConfig(opts)
 
 	return func(req *http.Request, next interceptor.HandlerFunc) (*http.Response, error) {
@@ -192,11 +198,6 @@ func emitLog(req *http.Request, cfg loggingConfig, event eventData) {
 	cfg.logger.LogAttrs(req.Context(), event.level, event.message, attrs...)
 }
 
-func sanitizeHeaderFieldKey(key string) string {
-	key = strings.ToLower(key)
-	return key
-}
-
 func buildAttrs(event eventData) []slog.Attr {
 	attrs := make([]slog.Attr, 0, 6)
 
@@ -207,7 +208,7 @@ func buildAttrs(event eventData) []slog.Attr {
 	if len(event.requestHeaders) > 0 {
 		headerAttrs := make([]any, 0, len(event.requestHeaders))
 		for key, value := range event.requestHeaders {
-			headerAttrs = append(headerAttrs, slog.String(sanitizeHeaderFieldKey(key), value))
+			headerAttrs = append(headerAttrs, slog.String(strings.ToLower(key), value))
 		}
 		requestAttrs = append(requestAttrs, slog.Group("header", headerAttrs...))
 	}
@@ -286,6 +287,13 @@ func extractServerPort(u *url.URL) int {
 func classifyErrorType(err error) string {
 	if err == nil {
 		return ""
+	}
+
+	var typedErr ErrorTyper
+	if errors.As(err, &typedErr) {
+		if errorType := typedErr.ErrorType(); errorType != "" {
+			return errorType
+		}
 	}
 
 	root := err

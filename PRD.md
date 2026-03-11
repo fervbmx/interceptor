@@ -78,7 +78,7 @@ The exported functions `BasicAuthInterceptor`, `HeaderInterceptor`, and `Logging
 | Before | After |
 |---|---|
 | `func BasicAuthInterceptor(...)` | `func BasicAuth(...)` |
-| `func HeaderInterceptor(...)` | `func Header(...)` |
+| `func HeaderInterceptor(...)` | `func AddHeader(...)` |
 | `func LoggingInterceptor(...)` | `func Logging(...)` |
 
 **Acceptance Criterion:**
@@ -98,7 +98,7 @@ The root package is named `interceptor`. The types `InterceptorFunc` and `Transp
 
 | Before | After |
 |---|---|
-| `type InterceptorFunc func(...)` | `type Func func(...)` |
+| `type InterceptorFunc func(...)` | `type Middleware func(...)` |
 | `type TransportInterceptor struct` | `type Transport struct` |
 | `func NewTransportInterceptor(...)` | `func New(...)` or `func NewTransport(...)` |
 

@@ -9,57 +9,57 @@ import "net/http"
 // It takes an HTTP request and returns a response or error.
 type HandlerFunc func(req *http.Request) (*http.Response, error)
 
-// InterceptorFunc defines an interceptor. It receives the outgoing request and
+// Middleware defines an interceptor. It receives the outgoing request and
 // a next function representing the next processing step in the interceptor
 // chain.
-type InterceptorFunc func(req *http.Request, next HandlerFunc) (*http.Response, error)
+type Middleware func(req *http.Request, next HandlerFunc) (*http.Response, error)
 
-// TransportInterceptor implements http.RoundTripper by running a chain of interceptors
+// Transport implements http.RoundTripper by running a chain of interceptors
 // in front of a default transport.
-type TransportInterceptor struct {
+type Transport struct {
 	defaultTransport http.RoundTripper
-	interceptors     []InterceptorFunc
+	interceptors     []Middleware
 }
 
-// NewTransportInterceptor creates a new TransportInterceptor with the given default RoundTripper
+// NewTransport creates a new Transport with the given default RoundTripper
 // and interceptors. If defaultTransport is nil, http.DefaultTransport is used.
 // Interceptors are executed in the order provided.
 //
 //	// Using the default transport:
 //	client := &http.Client{
-//	    Transport: interceptor.NewTransportInterceptor(nil, AInterceptor, BInterceptor),
+//	    Transport: interceptor.NewTransport(nil, AInterceptor, BInterceptor),
 //	}
 //
 //	// Using a custom default transport:
 //	client := &http.Client{
-//	    Transport: interceptor.NewTransportInterceptor(customTransport, AInterceptor, BInterceptor),
+//	    Transport: interceptor.NewTransport(customTransport, AInterceptor, BInterceptor),
 //	}
 //
 // With this configuration, a request flows as:
 //
 //	AInterceptor → BInterceptor → customTransport
-func NewTransportInterceptor(defaultTransport http.RoundTripper, interceptors ...InterceptorFunc) *TransportInterceptor {
+func NewTransport(defaultTransport http.RoundTripper, interceptors ...Middleware) *Transport {
 	if defaultTransport == nil {
 		defaultTransport = http.DefaultTransport
 	}
-	return &TransportInterceptor{
+	return &Transport{
 		defaultTransport: defaultTransport,
 		interceptors:     interceptors,
 	}
 }
 
-// Use appends one or more interceptors to the chain. They are appended after
+// Add appends one or more interceptors to the chain. They are appended after
 // any interceptors already registered.
 //
-//	t := interceptor.NewTransportInterceptor(nil, AuthInterceptor).Use(MetricsInterceptor)
+//	t := interceptor.NewTransport(nil, AuthInterceptor).Add(MetricsInterceptor)
 //	// order: AuthInterceptor → MetricsInterceptor → default transport
-func (t *TransportInterceptor) Use(interceptors ...InterceptorFunc) *TransportInterceptor {
+func (t *Transport) Add(interceptors ...Middleware) *Transport {
 	t.interceptors = append(t.interceptors, interceptors...)
 	return t
 }
 
 // RoundTrip executes the interceptor chain and then the underlying transport.
-func (t *TransportInterceptor) RoundTrip(req *http.Request) (*http.Response, error) {
+func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 	// Build the final handler that delegates to the default transport.
 	final := HandlerFunc(func(r *http.Request) (*http.Response, error) {
 		return t.defaultTransport.RoundTrip(r)
@@ -69,13 +69,13 @@ func (t *TransportInterceptor) RoundTrip(req *http.Request) (*http.Response, err
 	// registered is the first to process the request (outermost).
 	handler := final
 	for i := len(t.interceptors) - 1; i >= 0; i-- {
-		interceptor := t.interceptors[i]
+		fn := t.interceptors[i]
 		next := handler
-		handler = func(i InterceptorFunc, n HandlerFunc) HandlerFunc {
+		handler = func(fn Middleware, n HandlerFunc) HandlerFunc {
 			return func(r *http.Request) (*http.Response, error) {
-				return i(r, n)
+				return fn(r, n)
 			}
-		}(interceptor, next)
+		}(fn, next)
 	}
 
 	return handler(req)

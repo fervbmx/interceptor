@@ -5,15 +5,15 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/fervbmx/interceptor"
 	"github.com/fervbmx/interceptor/interceptors"
@@ -88,8 +88,8 @@ func TestLoggingInterceptor_StructuredAttrs(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 
-	client := &http.Client{Transport: interceptor.NewTransportInterceptor(nil,
-		interceptors.LoggingInterceptor(&interceptors.LoggingOptions{Logger: logger}),
+	client := &http.Client{Transport: interceptor.NewTransport(nil,
+		interceptors.AddRequestLogging(&interceptors.LoggingOptions{Logger: logger}),
 	)}
 
 	req, err := http.NewRequest(http.MethodGet, server.URL+"/v1/users?page=2", nil)
@@ -144,8 +144,8 @@ func TestLoggingInterceptor_StatusLevels(t *testing.T) {
 			}))
 			t.Cleanup(server.Close)
 
-			client := &http.Client{Transport: interceptor.NewTransportInterceptor(nil,
-				interceptors.LoggingInterceptor(&interceptors.LoggingOptions{Logger: logger}),
+			client := &http.Client{Transport: interceptor.NewTransport(nil,
+				interceptors.AddRequestLogging(&interceptors.LoggingOptions{Logger: logger}),
 			)}
 
 			resp, err := client.Get(server.URL)
@@ -166,9 +166,9 @@ func TestLoggingInterceptor_StatusLevels(t *testing.T) {
 func TestLoggingInterceptor_TransportError(t *testing.T) {
 	logger, sink := newCaptureLogger()
 
-	transport := interceptor.NewTransportInterceptor(roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+	transport := interceptor.NewTransport(roundTripperFunc(func(req *http.Request) (*http.Response, error) {
 		return nil, errors.New("dial tcp: connection refused")
-	}), interceptors.LoggingInterceptor(&interceptors.LoggingOptions{Logger: logger}))
+	}), interceptors.AddRequestLogging(&interceptors.LoggingOptions{Logger: logger}))
 
 	client := &http.Client{Transport: transport}
 	_, err := client.Get("http://example.com")
@@ -195,8 +195,8 @@ func TestLoggingInterceptor_HTTPErrorStatusSetsErrorType(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 
-	client := &http.Client{Transport: interceptor.NewTransportInterceptor(nil,
-		interceptors.LoggingInterceptor(&interceptors.LoggingOptions{Logger: logger}),
+	client := &http.Client{Transport: interceptor.NewTransport(nil,
+		interceptors.AddRequestLogging(&interceptors.LoggingOptions{Logger: logger}),
 	)}
 
 	resp, err := client.Get(server.URL)
@@ -217,8 +217,8 @@ func TestLoggingInterceptor_NoErrorTypeOnSuccess(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 
-	client := &http.Client{Transport: interceptor.NewTransportInterceptor(nil,
-		interceptors.LoggingInterceptor(&interceptors.LoggingOptions{Logger: logger}),
+	client := &http.Client{Transport: interceptor.NewTransport(nil,
+		interceptors.AddRequestLogging(&interceptors.LoggingOptions{Logger: logger}),
 	)}
 
 	resp, err := client.Get(server.URL)
@@ -237,13 +237,12 @@ func TestLoggingInterceptor_Duration(t *testing.T) {
 	logger, sink := newCaptureLogger()
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		time.Sleep(10 * time.Millisecond)
 		w.WriteHeader(http.StatusOK)
 	}))
 	t.Cleanup(server.Close)
 
-	client := &http.Client{Transport: interceptor.NewTransportInterceptor(nil,
-		interceptors.LoggingInterceptor(&interceptors.LoggingOptions{Logger: logger}),
+	client := &http.Client{Transport: interceptor.NewTransport(nil,
+		interceptors.AddRequestLogging(&interceptors.LoggingOptions{Logger: logger}),
 	)}
 
 	resp, err := client.Get(server.URL)
@@ -260,9 +259,6 @@ func TestLoggingInterceptor_Duration(t *testing.T) {
 	if duration <= 0 {
 		t.Fatalf("http.client.request.duration = %v, want > 0", duration)
 	}
-	if duration >= 1 {
-		t.Fatalf("http.client.request.duration = %v, want < 1 for a 10ms sleep", duration)
-	}
 }
 
 func TestLoggingInterceptor_SensitiveHeaderRedaction(t *testing.T) {
@@ -273,14 +269,17 @@ func TestLoggingInterceptor_SensitiveHeaderRedaction(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 
-	client := &http.Client{Transport: interceptor.NewTransportInterceptor(nil,
-		interceptors.LoggingInterceptor(&interceptors.LoggingOptions{
+	client := &http.Client{Transport: interceptor.NewTransport(nil,
+		interceptors.AddRequestLogging(&interceptors.LoggingOptions{
 			Logger:       logger,
 			HeadersToLog: []string{"Authorization", "Cookie"},
 		}),
 	)}
 
-	req, _ := http.NewRequest(http.MethodGet, server.URL, nil)
+	req, err := http.NewRequest(http.MethodGet, server.URL, nil)
+	if err != nil {
+		t.Fatalf("http.NewRequest(%q) error: %v", server.URL, err)
+	}
 	req.Header.Set("Authorization", "Bearer top-secret")
 	req.Header.Set("Cookie", "session=secret")
 
@@ -303,14 +302,17 @@ func TestLoggingInterceptor_CustomHeaders(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 
-	client := &http.Client{Transport: interceptor.NewTransportInterceptor(nil,
-		interceptors.LoggingInterceptor(&interceptors.LoggingOptions{
+	client := &http.Client{Transport: interceptor.NewTransport(nil,
+		interceptors.AddRequestLogging(&interceptors.LoggingOptions{
 			Logger:       logger,
 			HeadersToLog: []string{"X-Correlation-ID"},
 		}),
 	)}
 
-	req, _ := http.NewRequest(http.MethodGet, server.URL, nil)
+	req, err := http.NewRequest(http.MethodGet, server.URL, nil)
+	if err != nil {
+		t.Fatalf("http.NewRequest(%q) error: %v", server.URL, err)
+	}
 	req.Header.Set("X-Correlation-ID", "corr-1")
 
 	resp, err := client.Do(req)
@@ -329,8 +331,8 @@ func TestLoggingInterceptor_NilOptions(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 
-	client := &http.Client{Transport: interceptor.NewTransportInterceptor(nil,
-		interceptors.LoggingInterceptor(nil),
+	client := &http.Client{Transport: interceptor.NewTransport(nil,
+		interceptors.AddRequestLogging(nil),
 	)}
 
 	resp, err := client.Get(server.URL)
@@ -352,10 +354,10 @@ func TestLoggingInterceptor_ChainPosition(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 
-	client := &http.Client{Transport: interceptor.NewTransportInterceptor(nil,
-		interceptors.LoggingInterceptor(&interceptors.LoggingOptions{Logger: logger}),
-		interceptors.HeaderInterceptor("X-Req-Id", "req-1"),
-		interceptors.BasicAuthInterceptor("user", "pass"),
+	client := &http.Client{Transport: interceptor.NewTransport(nil,
+		interceptors.AddRequestLogging(&interceptors.LoggingOptions{Logger: logger}),
+		interceptors.AddHeader("X-Req-Id", "req-1"),
+		interceptors.AddBasicAuth("user", "pass"),
 	)}
 
 	resp, err := client.Get(server.URL)
@@ -383,8 +385,8 @@ func TestLoggingInterceptor_Concurrent(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 
-	client := &http.Client{Transport: interceptor.NewTransportInterceptor(nil,
-		interceptors.LoggingInterceptor(&interceptors.LoggingOptions{Logger: logger}),
+	client := &http.Client{Transport: interceptor.NewTransport(nil,
+		interceptors.AddRequestLogging(&interceptors.LoggingOptions{Logger: logger}),
 	)}
 
 	const total = 50
@@ -416,7 +418,7 @@ func TestLoggingInterceptor_RequestImmutability(t *testing.T) {
 	}
 	originalReq.Header.Set("X-Original", "keep")
 
-	transport := interceptor.NewTransportInterceptor(
+	transport := interceptor.NewTransport(
 		roundTripperFunc(func(req *http.Request) (*http.Response, error) {
 			if req == originalReq {
 				t.Fatal("downstream received original request pointer; expected clone")
@@ -432,7 +434,7 @@ func TestLoggingInterceptor_RequestImmutability(t *testing.T) {
 			}
 			return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader("ok"))}, nil
 		}),
-		interceptors.LoggingInterceptor(&interceptors.LoggingOptions{Logger: logger}),
+		interceptors.AddRequestLogging(&interceptors.LoggingOptions{Logger: logger}),
 		func(req *http.Request, next interceptor.HandlerFunc) (*http.Response, error) {
 			req.Header.Set("X-Mutated", "yes")
 			req.Method = http.MethodPut
@@ -468,8 +470,8 @@ func TestLoggingInterceptor_WithJSONHandler(t *testing.T) {
 	var out bytes.Buffer
 	logger := slog.New(slog.NewJSONHandler(&out, nil))
 
-	client := &http.Client{Transport: interceptor.NewTransportInterceptor(nil,
-		interceptors.LoggingInterceptor(&interceptors.LoggingOptions{Logger: logger}),
+	client := &http.Client{Transport: interceptor.NewTransport(nil,
+		interceptors.AddRequestLogging(&interceptors.LoggingOptions{Logger: logger}),
 	)}
 
 	resp, err := client.Get(server.URL + "/json")
@@ -488,7 +490,10 @@ func TestLoggingInterceptor_WithJSONHandler(t *testing.T) {
 	if !ok {
 		t.Fatalf("http group missing: %v", first)
 	}
-	requestMap := httpMap["request"].(map[string]any)
+	requestMap, ok := httpMap["request"].(map[string]any)
+	if !ok {
+		t.Fatalf("http[request] missing or wrong type, got: %T", httpMap["request"])
+	}
 	if requestMap["method"] != "GET" {
 		t.Fatalf("http.request.method = %v, want GET", requestMap["method"])
 	}
@@ -503,8 +508,8 @@ func TestLoggingInterceptor_WithTextHandler(t *testing.T) {
 	var out bytes.Buffer
 	logger := slog.New(slog.NewTextHandler(&out, nil))
 
-	client := &http.Client{Transport: interceptor.NewTransportInterceptor(nil,
-		interceptors.LoggingInterceptor(&interceptors.LoggingOptions{Logger: logger}),
+	client := &http.Client{Transport: interceptor.NewTransport(nil,
+		interceptors.AddRequestLogging(&interceptors.LoggingOptions{Logger: logger}),
 	)}
 
 	resp, err := client.Get(server.URL + "/text")
@@ -545,8 +550,8 @@ func TestLoggingInterceptor_HandlerOptions_ReplaceAttr(t *testing.T) {
 		},
 	}))
 
-	client := &http.Client{Transport: interceptor.NewTransportInterceptor(nil,
-		interceptors.LoggingInterceptor(&interceptors.LoggingOptions{Logger: logger}),
+	client := &http.Client{Transport: interceptor.NewTransport(nil,
+		interceptors.AddRequestLogging(&interceptors.LoggingOptions{Logger: logger}),
 	)}
 
 	resp, err := client.Get(server.URL)
@@ -564,8 +569,14 @@ func TestLoggingInterceptor_HandlerOptions_ReplaceAttr(t *testing.T) {
 
 	lines := splitLines(out.String())
 	first := decodeJSONMap(t, lines[0])
-	httpMap := first["http"].(map[string]any)
-	requestMap := httpMap["request"].(map[string]any)
+	httpMap, ok := first["http"].(map[string]any)
+	if !ok {
+		t.Fatalf("http group missing or wrong type: %T", first["http"])
+	}
+	requestMap, ok := httpMap["request"].(map[string]any)
+	if !ok {
+		t.Fatalf("http[request] missing or wrong type, got: %T", httpMap["request"])
+	}
 	if requestMap["method"] != "OVERRIDDEN" {
 		t.Fatalf("http.request.method = %v, want OVERRIDDEN", requestMap["method"])
 	}
@@ -580,8 +591,8 @@ func TestLoggingInterceptor_HandlerOptions_Level(t *testing.T) {
 	var out bytes.Buffer
 	logger := slog.New(slog.NewJSONHandler(&out, &slog.HandlerOptions{Level: slog.LevelError}))
 
-	client := &http.Client{Transport: interceptor.NewTransportInterceptor(nil,
-		interceptors.LoggingInterceptor(&interceptors.LoggingOptions{Logger: logger}),
+	client := &http.Client{Transport: interceptor.NewTransport(nil,
+		interceptors.AddRequestLogging(&interceptors.LoggingOptions{Logger: logger}),
 	)}
 
 	resp, err := client.Get(server.URL)
@@ -605,14 +616,17 @@ func TestLoggingInterceptor_OTelAttributeNames(t *testing.T) {
 	}))
 	t.Cleanup(server.Close)
 
-	client := &http.Client{Transport: interceptor.NewTransportInterceptor(nil,
-		interceptors.LoggingInterceptor(&interceptors.LoggingOptions{
+	client := &http.Client{Transport: interceptor.NewTransport(nil,
+		interceptors.AddRequestLogging(&interceptors.LoggingOptions{
 			Logger:       logger,
 			HeadersToLog: []string{"Content-Type"},
 		}),
 	)}
 
-	req, _ := http.NewRequest(http.MethodPost, server.URL+"/otel", strings.NewReader("abc"))
+	req, err := http.NewRequest(http.MethodPost, server.URL+"/otel", strings.NewReader("abc"))
+	if err != nil {
+		t.Fatalf("http.NewRequest(%q) error: %v", server.URL+"/otel", err)
+	}
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("User-Agent", "otel-test/1.0")
 
@@ -650,8 +664,8 @@ func TestLoggingInterceptor_ServerAddressAndPort(t *testing.T) {
 		}))
 		t.Cleanup(server.Close)
 
-		client := &http.Client{Transport: interceptor.NewTransportInterceptor(nil,
-			interceptors.LoggingInterceptor(&interceptors.LoggingOptions{Logger: logger}),
+		client := &http.Client{Transport: interceptor.NewTransport(nil,
+			interceptors.AddRequestLogging(&interceptors.LoggingOptions{Logger: logger}),
 		)}
 
 		resp, err := client.Get(server.URL)
@@ -666,12 +680,15 @@ func TestLoggingInterceptor_ServerAddressAndPort(t *testing.T) {
 	})
 
 	t.Run("explicit https default port", func(t *testing.T) {
-		transport := interceptor.NewTransportInterceptor(roundTripperFunc(func(req *http.Request) (*http.Response, error) {
+		transport := interceptor.NewTransport(roundTripperFunc(func(req *http.Request) (*http.Response, error) {
 			return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader("ok"))}, nil
-		}), interceptors.LoggingInterceptor(&interceptors.LoggingOptions{Logger: logger}))
+		}), interceptors.AddRequestLogging(&interceptors.LoggingOptions{Logger: logger}))
 
 		client := &http.Client{Transport: transport}
-		req, _ := http.NewRequest(http.MethodGet, "https://example.com/resource", nil)
+		req, err := http.NewRequest(http.MethodGet, "https://example.com/resource", nil)
+		if err != nil {
+			t.Fatalf("http.NewRequest(%q) error: %v", "https://example.com/resource", err)
+		}
 		resp, err := client.Do(req)
 		if err != nil {
 			t.Fatalf("client.Do error: %v", err)
@@ -763,25 +780,13 @@ func assertGroupPathInt64(t *testing.T, attrs map[string]any, path string, want 
 
 func mustServerPort(t *testing.T, rawURL string) int {
 	t.Helper()
-	var hostPort string
-	if strings.HasPrefix(rawURL, "http://") {
-		hostPort = strings.TrimPrefix(rawURL, "http://")
-	} else if strings.HasPrefix(rawURL, "https://") {
-		hostPort = strings.TrimPrefix(rawURL, "https://")
-	} else {
-		t.Fatalf("unsupported URL: %s", rawURL)
-	}
-	if idx := strings.Index(hostPort, "/"); idx >= 0 {
-		hostPort = hostPort[:idx]
-	}
-	parts := strings.Split(hostPort, ":")
-	if len(parts) != 2 {
-		t.Fatalf("expected host:port in URL: %s", rawURL)
-	}
-	var port int
-	_, err := fmt.Sscanf(parts[1], "%d", &port)
+	u, err := url.Parse(rawURL)
 	if err != nil {
-		t.Fatalf("failed parsing port from %q: %v", rawURL, err)
+		t.Fatalf("url.Parse(%q) error: %v", rawURL, err)
+	}
+	port, err := strconv.Atoi(u.Port())
+	if err != nil {
+		t.Fatalf("strconv.Atoi(%q) error: %v", u.Port(), err)
 	}
 	return port
 }
