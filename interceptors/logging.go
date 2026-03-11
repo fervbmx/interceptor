@@ -21,7 +21,6 @@ var defaultSensitiveHeaders = []string{
 }
 
 type LoggingOptions struct {
-
 	Logger *slog.Logger
 
 	HeadersToLog []string
@@ -49,8 +48,7 @@ type eventData struct {
 	requestBodySize  *int64
 	responseBodySize *int64
 	requestHeaders   map[string]string
-	durationSeconds  *float64
-	requestID        string
+	duration         *float64
 }
 
 type ErrorTyper interface {
@@ -62,11 +60,11 @@ type ErrorTyper interface {
 // completion event or a failure event. If opts is nil, default logging options
 // are used.
 //
-//	interceptor.NewTransport(nil,
-//	    interceptors.AddRequestLogging(
-//          Logging: logging
-//      ),
-//	)
+//		interceptor.NewTransport(nil,
+//		    interceptors.AddRequestLogging(
+//	         Logging: logging
+//	     ),
+//		)
 func AddRequestLogging(opts *LoggingOptions) interceptor.Middleware {
 	cfg := buildLoggingConfig(opts)
 
@@ -131,7 +129,6 @@ func buildStartEvent(req *http.Request, cfg loggingConfig) eventData {
 		serverAddress:  req.URL.Hostname(),
 		serverPort:     extractServerPort(req.URL),
 		userAgent:      req.Header.Get("User-Agent"),
-		requestID:      req.Header.Get("X-Request-ID"),
 		requestHeaders: extractAllowedHeaders(req.Header, cfg.headersToLog, cfg.sensitiveHeaders),
 	}
 
@@ -145,13 +142,13 @@ func buildStartEvent(req *http.Request, cfg loggingConfig) eventData {
 func buildEndEvent(req *http.Request, resp *http.Response, err error, duration time.Duration) eventData {
 	seconds := duration.Seconds()
 	e := eventData{
-		level:           getLogLevel(resp, err),
-		method:          req.Method,
-		urlFull:         req.URL.String(),
-		urlScheme:       req.URL.Scheme,
-		serverAddress:   req.URL.Hostname(),
-		serverPort:      extractServerPort(req.URL),
-		durationSeconds: &seconds,
+		level:         getLogLevel(resp, err),
+		method:        req.Method,
+		urlFull:       req.URL.String(),
+		urlScheme:     req.URL.Scheme,
+		serverAddress: req.URL.Hostname(),
+		serverPort:    extractServerPort(req.URL),
+		duration:      &seconds,
 	}
 
 	if req.ContentLength >= 0 {
@@ -202,67 +199,120 @@ func emitLog(req *http.Request, cfg loggingConfig, event eventData) {
 func buildAttrs(event eventData) []slog.Attr {
 	attrs := make([]slog.Attr, 0, 6)
 
-	requestAttrs := []any{slog.String("method", event.method)}
-	if event.requestBodySize != nil {
-		requestAttrs = append(requestAttrs, slog.Group("body", slog.Int64("size", *event.requestBodySize)))
-	}
-	if len(event.requestHeaders) > 0 {
-		headerAttrs := make([]any, 0, len(event.requestHeaders))
-		for key, value := range event.requestHeaders {
-			headerAttrs = append(headerAttrs, slog.String(strings.ToLower(key), value))
-		}
-		requestAttrs = append(requestAttrs, slog.Group("header", headerAttrs...))
-	}
-
-	httpAttrs := []any{slog.Group("request", requestAttrs...)}
-	if event.statusCode != nil || event.responseBodySize != nil {
-		responseAttrs := make([]any, 0, 2)
-		if event.statusCode != nil {
-			responseAttrs = append(responseAttrs, slog.Int("status_code", *event.statusCode))
-		}
-		if event.responseBodySize != nil {
-			responseAttrs = append(responseAttrs, slog.Group("body", slog.Int64("size", *event.responseBodySize)))
-		}
-		httpAttrs = append(httpAttrs, slog.Group("response", responseAttrs...))
-	}
-
-	urlAttrs := []any{slog.String("full", event.urlFull)}
-	if event.urlScheme != "" {
-		urlAttrs = append(urlAttrs, slog.String("scheme", event.urlScheme))
-	}
-	attrs = append(attrs, slog.Group("url", urlAttrs...))
-
-	serverAttrs := []any{slog.String("address", event.serverAddress)}
-	if event.serverPort > 0 {
-		serverAttrs = append(serverAttrs, slog.Int("port", event.serverPort))
-	}
-	attrs = append(attrs, slog.Group("server", serverAttrs...))
+	attrs = append(attrs, buildURLAttrs(event))
+	attrs = append(attrs, buildServerAttrs(event))
+	attrs = append(attrs, buildHTTPAttrs(event))
 
 	if event.userAgent != "" {
-		attrs = append(attrs, slog.Group("user_agent", slog.String("original", event.userAgent)))
+		attrs = append(attrs,
+			slog.Group("user_agent",
+				slog.String("original", event.userAgent),
+			),
+		)
 	}
+
 	if event.errorType != "" {
-		attrs = append(attrs, slog.Group("error", slog.String("type", event.errorType)))
-	}
-
-	httpClientRequestAttrs := make([]any, 0, 1)
-	if event.durationSeconds != nil {
-		httpClientRequestAttrs = append(httpClientRequestAttrs, slog.Float64("duration", *event.durationSeconds))
-	}
-	if len(httpClientRequestAttrs) > 0 {
-		httpAttrs = append(httpAttrs, slog.Group("client", slog.Group("request", httpClientRequestAttrs...)))
-	}
-	attrs = append(attrs, slog.Group("http", httpAttrs...))
-
-	interceptorAttrs := make([]any, 0, 1)
-	if event.requestID != "" {
-		interceptorAttrs = append(interceptorAttrs, slog.String("request_id", event.requestID))
-	}
-	if len(interceptorAttrs) > 0 {
-		attrs = append(attrs, slog.Group("interceptor", interceptorAttrs...))
+		attrs = append(attrs,
+			slog.Group("error",
+				slog.String("type", event.errorType),
+			),
+		)
 	}
 
 	return attrs
+}
+
+func buildURLAttrs(event eventData) slog.Attr {
+	attrs := make([]any, 0, 2)
+	attrs = append(attrs, slog.String("full", event.urlFull))
+
+	if event.urlScheme != "" {
+		attrs = append(attrs, slog.String("scheme", event.urlScheme))
+	}
+
+	return slog.Group("url", attrs...)
+}
+
+func buildServerAttrs(event eventData) slog.Attr {
+	attrs := make([]any, 0, 2)
+	attrs = append(attrs, slog.String("address", event.serverAddress))
+
+	if event.serverPort > 0 {
+		attrs = append(attrs, slog.Int("port", event.serverPort))
+	}
+
+	return slog.Group("server", attrs...)
+}
+
+func buildHTTPAttrs(event eventData) slog.Attr {
+	attrs := make([]any, 0, 3)
+
+	attrs = append(attrs, buildHTTPRequestAttrs(event))
+	attrs = append(attrs, buildHTTPResponseAttrs(event))
+	attrs = append(attrs, buildHTTPClientAttrs(event))
+
+	return slog.Group("http", attrs...)
+}
+
+func buildHTTPRequestAttrs(event eventData) slog.Attr {
+	attrs := make([]any, 0, 3)
+	attrs = append(attrs, slog.String("method", event.method))
+	attrs = append(attrs, buildHTTPRequestHeaderAttrs(event))
+
+	if event.requestBodySize != nil {
+		attrs = append(attrs,
+			slog.Group("body",
+				slog.Int64("size", *event.requestBodySize),
+			),
+		)
+	}
+
+	return slog.Group("request", attrs...)
+}
+
+func buildHTTPRequestHeaderAttrs(event eventData) slog.Attr {
+	if len(event.requestHeaders) == 0 {
+		return slog.Attr{}
+	}
+
+	attrs := make([]any, 0, len(event.requestHeaders))
+	for k, v := range event.requestHeaders {
+		attrs = append(attrs, slog.String(strings.ToLower(k), v))
+	}
+
+	return slog.Group("header", attrs...)
+}
+
+func buildHTTPResponseAttrs(event eventData) slog.Attr {
+	if event.statusCode == nil && event.responseBodySize == nil {
+		return slog.Attr{}
+	}
+
+	attrs := make([]any, 0, 2)
+
+	if event.statusCode != nil {
+		attrs = append(attrs, slog.Int("status_code", *event.statusCode))
+	}
+
+	if event.responseBodySize != nil {
+		attrs = append(attrs,
+			slog.Group("body",
+				slog.Int64("size", *event.responseBodySize),
+			),
+		)
+	}
+
+	return slog.Group("response", attrs...)
+}
+
+func buildHTTPClientAttrs(event eventData) slog.Attr {
+	if event.duration == nil {
+		return slog.Attr{}
+	}
+
+	return slog.Group("client",
+		slog.Group("request", slog.Float64("duration", *event.duration)),
+	)
 }
 
 func extractServerPort(u *url.URL) int {
