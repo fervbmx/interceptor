@@ -25,7 +25,7 @@ func TestTransport(t *testing.T) {
 	}
 
 	tp := interceptor.NewTransport(nil, aInterceptor)
-	tp.Add(bInterceptor)
+	tp.Use(bInterceptor)
 
 	client := &http.Client{
 		Transport: tp,

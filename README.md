@@ -22,13 +22,13 @@ import (
 ```
 
 ```go
-// Flow: AddRequestLogging → AddHeader → AddBasicAuth → http.DefaultTransport
+// Flow: RequestLogging → Header → BasicAuth → http.DefaultTransport
 client := &http.Client{
     Transport: interceptor.NewTransport(
         nil,
-        interceptors.AddHeader("X-API-KEY", "secret"),
-        interceptors.AddBasicAuth("user", "pass"),
-        interceptors.AddRequestLogging(nil),
+        interceptors.Header("X-API-KEY", "secret"),
+        interceptors.BasicAuth("user", "pass"),
+        interceptors.RequestLogging(nil),
     ),
 }
 ```
@@ -39,9 +39,9 @@ Pass `nil` as the first argument to use `http.DefaultTransport`, or pass a custo
 
 | Interceptor | Description |
 |---|---|
-| `AddHeader(key, value)` | Sets a header on every request |
-| `AddBasicAuth(user, password)` | Sets Basic authentication |
-| `AddRequestLogging(opts)` | Emits structured `slog` attributes |
+| `Header(key, value)` | Sets a header on every request |
+| `BasicAuth(user, password)` | Sets Basic authentication |
+| `RequestLogging(opts)` | Emits structured `slog` attributes |
 
 ## Custom interceptors
 

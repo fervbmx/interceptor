@@ -45,7 +45,7 @@ func TestHeaderInterceptor(t *testing.T) {
 			client := http.Client{
 				Transport: interceptor.NewTransport(
 					http.DefaultTransport,
-					interceptors.AddHeader(tc.key, tc.value),
+					interceptors.Header(tc.key, tc.value),
 				),
 				Timeout: 15 * time.Second,
 			}

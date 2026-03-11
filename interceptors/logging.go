@@ -14,6 +14,7 @@ import (
 )
 
 const redacted = "REDACTED"
+
 var defaultSensitiveHeaders = newHeaderSet(
 	"Authorization",
 	"Cookie",
@@ -50,17 +51,19 @@ type RequestLoggingOptions struct {
 	SensitiveHeaders []string
 }
 
-// AddRequestLogging returns an interceptor that logs request lifecycle events
+// RequestLogging returns an interceptor that logs request lifecycle events
 // before and after the next handler runs. It emits a start event, then either a
 // completion event or a failure event. If opts is nil, default logging options
 // are used.
 //
 // interceptor.NewTransport(nil,
-//	interceptors.AddRequestLogging(
+//
+//	interceptors.RequestLogging(
 //		Logging: logging
 //	),
+//
 // )
-func AddRequestLogging(opts *RequestLoggingOptions) interceptor.Middleware {
+func RequestLogging(opts *RequestLoggingOptions) interceptor.Middleware {
 	cfg := buildLoggingConfig(opts)
 
 	return func(req *http.Request, next interceptor.HandlerFunc) (*http.Response, error) {
@@ -353,25 +356,25 @@ func getErrorType(err error) string {
 
 // getAllowedHeaders returns allowed headers with sensitive values redacted.
 func getAllowedHeaders(headers http.Header, allowed, sensitive map[string]struct{}) map[string]string {
-	if len(allowed) == 0 {
+	if len(headers) == 0 || len(allowed) == 0 {
 		return nil
 	}
 
-	logged := make(map[string]string, len(allowed))
+	logged := make(map[string]string, len(headers))
 
-	for h := range allowed {
-		key := textproto.CanonicalMIMEHeaderKey(h)
-		values, ok := headers[key]
-		if !ok || len(values) == 0 {
+	for key, values := range headers {
+		if _, ok := allowed[key]; !ok {
 			continue
 		}
 
-		if _, isSensitive := sensitive[key]; isSensitive {
-			logged[h] = redacted
+		if _, ok := sensitive[key]; ok {
+			logged[key] = redacted
 			continue
 		}
 
-		logged[h] = values[0]
+		if len(values) > 0 {
+			logged[key] = values[0]
+		}
 	}
 
 	if len(logged) == 0 {

@@ -10,7 +10,7 @@ import (
 	"github.com/fervbmx/interceptor/interceptors"
 )
 
-func TestAddBasicAuth(t *testing.T) {
+func TestBasicAuth(t *testing.T) {
 	cases := []struct {
 		name     string
 		username string
@@ -41,7 +41,7 @@ func TestAddBasicAuth(t *testing.T) {
 			client := http.Client{
 				Transport: interceptor.NewTransport(
 					http.DefaultTransport,
-					interceptors.AddBasicAuth(tc.username, tc.password),
+					interceptors.BasicAuth(tc.username, tc.password),
 				),
 				Timeout: 15 * time.Second,
 			}

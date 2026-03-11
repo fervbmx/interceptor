@@ -83,11 +83,11 @@ type typedErr struct{}
 
 func (typedErr) Error() string { return "typed" }
 
-func TestAddRequestLogging_SuccessWithHeaders(t *testing.T) {
+func TestRequestLogging_SuccessWithHeaders(t *testing.T) {
 	logger, sink := newCaptureLogger()
 
 	transport := interceptor.NewTransport(nil,
-		interceptors.AddRequestLogging(&interceptors.RequestLoggingOptions{
+		interceptors.RequestLogging(&interceptors.RequestLoggingOptions{
 			Logger:       logger,
 			HeadersToLog: []string{"Authorization", "X-Correlation-ID"},
 		}),
@@ -161,7 +161,7 @@ func TestAddRequestLogging_SuccessWithHeaders(t *testing.T) {
 	}
 }
 
-func TestAddRequestLogging_StatusLevels(t *testing.T) {
+func TestRequestLogging_StatusLevels(t *testing.T) {
 	testCases := []struct {
 		name      string
 		status    int
@@ -177,7 +177,7 @@ func TestAddRequestLogging_StatusLevels(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			logger, sink := newCaptureLogger()
 			transport := interceptor.NewTransport(nil,
-				interceptors.AddRequestLogging(&interceptors.RequestLoggingOptions{Logger: logger}),
+				interceptors.RequestLogging(&interceptors.RequestLoggingOptions{Logger: logger}),
 				func(req *http.Request, _ interceptor.HandlerFunc) (*http.Response, error) {
 					return &http.Response{
 						StatusCode: tc.status,
@@ -217,7 +217,7 @@ func TestAddRequestLogging_StatusLevels(t *testing.T) {
 	}
 }
 
-func TestAddRequestLogging_TransportErrors(t *testing.T) {
+func TestRequestLogging_TransportErrors(t *testing.T) {
 	testCases := []struct {
 		name     string
 		err      error
@@ -232,7 +232,7 @@ func TestAddRequestLogging_TransportErrors(t *testing.T) {
 			logger, sink := newCaptureLogger()
 
 			transport := interceptor.NewTransport(nil,
-				interceptors.AddRequestLogging(&interceptors.RequestLoggingOptions{
+				interceptors.RequestLogging(&interceptors.RequestLoggingOptions{
 					Logger: logger,
 				}),
 				func(req *http.Request, _ interceptor.HandlerFunc) (*http.Response, error) {
@@ -263,7 +263,7 @@ func TestAddRequestLogging_TransportErrors(t *testing.T) {
 	}
 }
 
-func TestAddRequestLogging_HTTPSDefaultPort(t *testing.T) {
+func TestRequestLogging_HTTPSDefaultPort(t *testing.T) {
 	testCases := []struct {
 		name       string
 		url        string
@@ -282,7 +282,7 @@ func TestAddRequestLogging_HTTPSDefaultPort(t *testing.T) {
 			logger, sink := newCaptureLogger()
 
 			transport := interceptor.NewTransport(nil,
-				interceptors.AddRequestLogging(&interceptors.RequestLoggingOptions{Logger: logger}),
+				interceptors.RequestLogging(&interceptors.RequestLoggingOptions{Logger: logger}),
 				func(req *http.Request, _ interceptor.HandlerFunc) (*http.Response, error) {
 					return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader("ok"))}, nil
 				},
