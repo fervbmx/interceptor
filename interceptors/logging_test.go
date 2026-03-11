@@ -119,8 +119,8 @@ func TestLoggingInterceptor_StructuredAttrs(t *testing.T) {
 
 	finish := records[1].attrs
 	assertGroupPathInt64(t, finish, "http.response.status_code", int64(http.StatusOK))
-	if _, ok := getGroupPath(finish, "interceptor.duration_ms").(float64); !ok {
-		t.Fatal("interceptor.duration_ms missing")
+	if _, ok := getGroupPath(finish, "http.client.request.duration").(float64); !ok {
+		t.Fatal("http.client.request.duration missing")
 	}
 }
 
@@ -253,12 +253,15 @@ func TestLoggingInterceptor_Duration(t *testing.T) {
 	_ = resp.Body.Close()
 
 	records := sink.snapshot()
-	duration, ok := getGroupPath(records[1].attrs, "interceptor.duration_ms").(float64)
+	duration, ok := getGroupPath(records[1].attrs, "http.client.request.duration").(float64)
 	if !ok {
-		t.Fatalf("interceptor.duration_ms has unexpected type: %T", getGroupPath(records[1].attrs, "interceptor.duration_ms"))
+		t.Fatalf("http.client.request.duration has unexpected type: %T", getGroupPath(records[1].attrs, "http.client.request.duration"))
 	}
 	if duration <= 0 {
-		t.Fatalf("interceptor.duration_ms = %v, want > 0", duration)
+		t.Fatalf("http.client.request.duration = %v, want > 0", duration)
+	}
+	if duration >= 1 {
+		t.Fatalf("http.client.request.duration = %v, want < 1 for a 10ms sleep", duration)
 	}
 }
 
@@ -535,7 +538,7 @@ func TestLoggingInterceptor_HandlerOptions_ReplaceAttr(t *testing.T) {
 				seenHTTPRequestMethod = true
 				a.Value = slog.StringValue("OVERRIDDEN")
 			}
-			if strings.Join(groups, ".") == "interceptor" && a.Key == "duration_ms" {
+			if strings.Join(groups, ".") == "http.client.request" && a.Key == "duration" {
 				seenInterceptorDuration = true
 			}
 			return a
@@ -556,7 +559,7 @@ func TestLoggingInterceptor_HandlerOptions_ReplaceAttr(t *testing.T) {
 		t.Fatal("ReplaceAttr did not receive [http request] method")
 	}
 	if !seenInterceptorDuration {
-		t.Fatal("ReplaceAttr did not receive [interceptor] duration_ms")
+		t.Fatal("ReplaceAttr did not receive [http client request] duration")
 	}
 
 	lines := splitLines(out.String())

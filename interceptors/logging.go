@@ -55,7 +55,7 @@ type eventData struct {
 	requestBodySize  *int64
 	responseBodySize *int64
 	requestHeaders   map[string]string
-	durationMS       *float64
+	durationSeconds  *float64
 	requestID        string
 }
 
@@ -136,15 +136,15 @@ func buildStartEvent(req *http.Request, cfg loggingConfig) eventData {
 }
 
 func buildEndEvent(req *http.Request, resp *http.Response, err error, duration time.Duration) eventData {
-	ms := float64(duration) / float64(time.Millisecond)
+	seconds := duration.Seconds()
 	e := eventData{
-		level:         getLogLevel(resp, err),
-		method:        req.Method,
-		urlFull:       req.URL.String(),
-		urlScheme:     req.URL.Scheme,
-		serverAddress: req.URL.Hostname(),
-		serverPort:    extractServerPort(req.URL),
-		durationMS:    &ms,
+		level:           getLogLevel(resp, err),
+		method:          req.Method,
+		urlFull:         req.URL.String(),
+		urlScheme:       req.URL.Scheme,
+		serverAddress:   req.URL.Hostname(),
+		serverPort:      extractServerPort(req.URL),
+		durationSeconds: &seconds,
 	}
 
 	if req.ContentLength >= 0 {
@@ -223,7 +223,6 @@ func buildAttrs(event eventData) []slog.Attr {
 		}
 		httpAttrs = append(httpAttrs, slog.Group("response", responseAttrs...))
 	}
-	attrs = append(attrs, slog.Group("http", httpAttrs...))
 
 	urlAttrs := []any{slog.String("full", event.urlFull)}
 	if event.urlScheme != "" {
@@ -244,10 +243,16 @@ func buildAttrs(event eventData) []slog.Attr {
 		attrs = append(attrs, slog.Group("error", slog.String("type", event.errorType)))
 	}
 
-	interceptorAttrs := make([]any, 0, 2)
-	if event.durationMS != nil {
-		interceptorAttrs = append(interceptorAttrs, slog.Float64("duration_ms", *event.durationMS))
+	httpClientRequestAttrs := make([]any, 0, 1)
+	if event.durationSeconds != nil {
+		httpClientRequestAttrs = append(httpClientRequestAttrs, slog.Float64("duration", *event.durationSeconds))
 	}
+	if len(httpClientRequestAttrs) > 0 {
+		httpAttrs = append(httpAttrs, slog.Group("client", slog.Group("request", httpClientRequestAttrs...)))
+	}
+	attrs = append(attrs, slog.Group("http", httpAttrs...))
+
+	interceptorAttrs := make([]any, 0, 1)
 	if event.requestID != "" {
 		interceptorAttrs = append(interceptorAttrs, slog.String("request_id", event.requestID))
 	}

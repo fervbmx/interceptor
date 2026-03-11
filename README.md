@@ -32,6 +32,8 @@ Pass `nil` as the first argument to use `http.DefaultTransport`, or provide your
 | `BasicAuthInterceptor(user, password)` | Sets Basic authentication |
 | `LoggingInterceptor(opts)` | Emits structured `slog` attributes |
 
+`LoggingInterceptor` emits request duration as `http.client.request.duration` using seconds as the unit (UCUM `s`).
+
 ## Custom interceptors
 
 Write your own `InterceptorFunc` to hook into the request/response lifecycle. Call `next` to continue the chain, or return early to short-circuit it.
