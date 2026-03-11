@@ -34,10 +34,6 @@ type Transport struct {
 //	client := &http.Client{
 //	    Transport: interceptor.NewTransport(customTransport, AInterceptor, BInterceptor),
 //	}
-//
-// With this configuration, a request flows as:
-//
-//	AInterceptor → BInterceptor → customTransport
 func NewTransport(defaultTransport http.RoundTripper, interceptors ...Middleware) *Transport {
 	if defaultTransport == nil {
 		defaultTransport = http.DefaultTransport
@@ -52,21 +48,19 @@ func NewTransport(defaultTransport http.RoundTripper, interceptors ...Middleware
 // any interceptors already registered.
 //
 //	t := interceptor.NewTransport(nil, AuthInterceptor).Add(MetricsInterceptor)
-//	// order: AuthInterceptor → MetricsInterceptor → default transport
 func (t *Transport) Add(interceptors ...Middleware) *Transport {
 	t.interceptors = append(t.interceptors, interceptors...)
 	return t
 }
 
-// RoundTrip executes the interceptor chain and then the underlying transport.
+// RoundTrip executes the interceptor chain. The underlying transport is reached
+// only if each interceptor calls next.
 func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
-	// Build the final handler that delegates to the default transport.
+
 	final := HandlerFunc(func(r *http.Request) (*http.Response, error) {
 		return t.defaultTransport.RoundTrip(r)
 	})
 
-	// Wrap interceptors in reverse order so that the first interceptor
-	// registered is the first to process the request (outermost).
 	handler := final
 	for i := len(t.interceptors) - 1; i >= 0; i-- {
 		fn := t.interceptors[i]

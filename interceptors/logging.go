@@ -20,18 +20,12 @@ var defaultSensitiveHeaders = []string{
 	"Set-Cookie",
 }
 
-// LoggingOptions configures AddRequestLogging behavior.
 type LoggingOptions struct {
-	// Logger receives structured attributes.
-	// If nil, slog.Default() is used.
+
 	Logger *slog.Logger
 
-	// HeadersToLog is a request header allowlist.
-	// Empty means no additional headers are logged.
 	HeadersToLog []string
 
-	// SensitiveHeaders lists header names to redact as "***".
-	// Defaults to Authorization, Cookie, and Set-Cookie.
 	SensitiveHeaders []string
 }
 
@@ -59,13 +53,20 @@ type eventData struct {
 	requestID        string
 }
 
-// ErrorTyper can be implemented by error types to provide a stable,
-// human-readable classification label for structured logs.
 type ErrorTyper interface {
 	ErrorType() string
 }
 
-// AddRequestLogging returns an interceptor that logs request lifecycle events.
+// AddRequestLogging returns an interceptor that logs request lifecycle events
+// before and after the next handler runs. It emits a start event, then either a
+// completion event or a failure event. If opts is nil, default logging options
+// are used.
+//
+//	interceptor.NewTransport(nil,
+//	    interceptors.AddRequestLogging(
+//          Logging: logging
+//      ),
+//	)
 func AddRequestLogging(opts *LoggingOptions) interceptor.Middleware {
 	cfg := buildLoggingConfig(opts)
 
